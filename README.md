@@ -2,7 +2,7 @@
 
 
 # Ford Instrument Cluster Repository
-Reversing Mustang Cluster Firmware
+### `Reverse Engineering Instrument Cluster Firmware`
 
 Reversing Mustang Cluster Firmware to modify the bootsplash graphics/video with the intention of selling the process and/or software in the US Domestic Market where there are potentially millions of customers.  
   
