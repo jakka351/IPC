@@ -1,4 +1,4 @@
-<img width="1568" height="823" alt="image" src="https://github.com/user-attachments/assets/db5bf493-4aa2-4b01-ad44-0b7487149180" /><img width="1568" height="823" alt="image" src="https://github.com/user-attachments/assets/8fc7edb2-3324-46b8-8346-b9423ce952ed" /><img width="25%" height="25%" align="right" alt="image" src="https://github.com/user-attachments/assets/02c654e6-b1ae-4d33-a2c0-7f0ed58d4283" />
+<img width="25%" height="25%" align="right" alt="image" src="https://github.com/user-attachments/assets/02c654e6-b1ae-4d33-a2c0-7f0ed58d4283" />
 
 
 # Ford Instrument Cluster Repository
