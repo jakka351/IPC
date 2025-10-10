@@ -1,0 +1,1 @@
+sw_part_number=KR3T-14C088-KH,rom_part_number=0602,
