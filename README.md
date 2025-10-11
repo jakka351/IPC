@@ -1,7 +1,7 @@
 <img width="25%" height="25%" align="right" alt="image" src="https://github.com/user-attachments/assets/962611a0-a695-46bb-91af-1bb05fdb1925" />
 
 # Ford Instrument Cluster
-## `Reverse Engineering Instrument Cluster Firmware`  
+## `Reverse Engineering Firmware`  
 Reversing Mustang Cluster Firmware to modify the bootsplash graphics/video with the intention of selling the process and/or software in the US Domestic Market where there are potentially millions of customers.  
   
 `Anonymous Automotive Alliance is at it again`  
