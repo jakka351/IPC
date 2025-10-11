@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 # cluster_pipeline.sh
+# This is more of a theoretical script at the moment of what
+# the ultimate end process could be for editing and repacking
+# the firmware.
 # Usage: ./cluster_pipeline.sh path/to/firmware.vbf
 # If you already have a .bin -> pass that instead.
 
