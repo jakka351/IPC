@@ -1,6 +1,6 @@
 # VBF Firmware Files
-
-`.vbf`  
+  
+`KR3T-14C088-KH.vbf`. 
 The main firmware file.  
 `JR3T-14C025-JA.vbf`  
 The secondary bootloader that is uploaded prior to flashing to run the flash routine.  
