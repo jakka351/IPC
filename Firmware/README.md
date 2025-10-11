@@ -1,5 +1,13 @@
 # VBF Firmware Files
 
+`.vbf`  
+The main firmware file.  
+`.vbf`  
+The secondary bootloader that is uploaded prior to flashing to run the flash routine.  
+  
+
+`bitmaps_preinstall.sh`  
+This script was found by opening the `vbf` file in a text editor and looks like the actual script that is run on machine to install the data receieved from the flash via `CAN` 
 
 ```
 vbf_version = 2.2;
