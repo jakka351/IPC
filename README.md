@@ -8,6 +8,22 @@ Reversing Mustang Cluster Firmware to modify the bootsplash graphics/video with 
 <img width="1568" height="823" alt="image" src="https://github.com/user-attachments/assets/f878e225-39b3-4e64-a6ea-9e690fd58ea3" />
 <img width="10%" height="10%" align="right" alt="image" src="https://github.com/user-attachments/assets/ebccaf05-76d4-49a8-a429-7d21a6052dbd" />
 
+## Overview of works
+1. Unpacking of `vbf` firmware file to yield `bin` file using `python-VBF.py`.
+  
+2. Extraction of `cluster.kzb` from `bitmaps.bin` using `dumpifs`.
+  
+3. Extraction of `kanzi` filesystem from `cluster.kzb` using `kzbTools`.  
+  
+Workings can be found in the `Working` folder and the `KZB` folder. Strings were extracted at various stages using `Ghidra` and saved to `csv`.  
+
+The next steps are to delve into the `kanzi` filesystem which is from the output of `Kanzi Studio` - compiled into a binary-like `kzb` file. Unfortunately this software is not available without license,I have however requested a trial period from the developers.  
+  
+We must figure out how to edit the `Kanzi` filesystem files and how to repack them into a `kzb` file, and then pack that pack into a binary file, and finally package it all up back in a `vbf` file ready for flashing to a cluster.  
+
+`jakka351` `11/10/2025`  
+  
+
 
 ## PCM Hacking Post
 https://pcmhacking.net/forums/viewtopic.php?t=6306
