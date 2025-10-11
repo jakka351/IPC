@@ -2,7 +2,7 @@
 
 `.vbf`  
 The main firmware file.  
-`.vbf`  
+`JR3T-14C025-JA.vbf`  
 The secondary bootloader that is uploaded prior to flashing to run the flash routine.  
   
 
