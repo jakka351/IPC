@@ -12,7 +12,7 @@ Reversing Mustang Cluster Firmware to modify the bootsplash graphics/video with 
 
 
 ## `Anonymous Automotive Alliance is at it again`  
-
+The mysterious anonymous collective has one again surfaced in its war on firmware and is tactically assaulting the `vbf` format now. They will leave no stone unturned in their quest for firmware glory!  
 <img width="10%" height="10%" align="right" alt="image" src="https://github.com/user-attachments/assets/ebccaf05-76d4-49a8-a429-7d21a6052dbd" />
 
 ## Overview of works  
