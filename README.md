@@ -15,7 +15,7 @@ Reversing Mustang Cluster Firmware to modify the bootsplash graphics/video with 
 
 
  ```
-  The mysterious collective is back from the shadows, iron in one hand,
+ The mysterious collective is back from the shadows, iron in one hand,
 hex in the other, walking up on VBF like it owes rent.  
 We’re stripping layers, tagging the weird shit, and charting the
 whole ecosystem. This isn’t vandalism—it’s vision.  
