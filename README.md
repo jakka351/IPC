@@ -38,7 +38,7 @@ whatever file format thinks it’s safe behind corporate curtains.
   
 Workings can be found in the `Working` folder and the `KZB` folder. Strings were extracted at various stages using `Ghidra` and saved to `csv`.  
 
-The next steps are to delve into the `kanzi` filesystem which is from the output of `Kanzi Studio` - compiled into a binary-like `kzb` file. Unfortunately this software is not available without license,I have however requested a trial period from the developers.  
+The next steps are to delve into the `kanzi` filesystem which is from the output of `Kanzi Studio` - compiled into a binary-like `kzb` file. Unfortunately this software is not available without license, I have however requested a trial period from the developers.  
   
 We must figure out how to edit the `Kanzi` filesystem files and how to repack them into a `kzb` file, and then pack that pack into a binary file, and finally package it all up back in a `vbf` file ready for flashing to a cluster.  
 
