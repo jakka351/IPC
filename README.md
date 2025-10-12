@@ -21,9 +21,11 @@ The next steps are to delve into the `kanzi` filesystem which is from the output
   
 We must figure out how to edit the `Kanzi` filesystem files and how to repack them into a `kzb` file, and then pack that pack into a binary file, and finally package it all up back in a `vbf` file ready for flashing to a cluster.  
 
-`jakka351` `11/10/2025`  
+`jakka351` `11/10/2025`    
+I am currently working on a better unpacker of the `kzb` file, as it appearts there is some corruption in the currently unpacked version we have in this repo. I have also started on a re-packer which I have posted `https://github.com/jakka351/Python-KZB` and here `https://github.com/jakka351/kzbTools`. I almost have the unpacking process downpat, and have useable images in directories ready to be edited. The next big step is re-packing the folder structure to a `.kzb` file. Jason F is currently working on repacking `bitmaps.bin.tar` so we are making some good progress towards the goal of flashing a modified VBF file to a cluster.  
   
 
+`jakka351` `12/10/2025`  
 
 ## PCM Hacking Post
 https://pcmhacking.net/forums/viewtopic.php?t=6306
