@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-KZB Tools GUI - Graphical interface for packing and unpacking KZB/KZBF files
-Thread-safe UI fixes: all Tk calls run on main thread.
+KZB Tools GUI - Engineering Interface
+Thread-safe UI with progress monitoring
 """
 
 import tkinter as tk
@@ -9,7 +9,7 @@ from tkinter import ttk, filedialog, scrolledtext, messagebox
 import threading
 import struct
 from pathlib import Path
-from typing import List
+from typing import List, Callable
 import queue
 import hashlib
 
@@ -25,21 +25,6 @@ def buffer_to_file(out_path: Path, buf: bytes):
     with open(out_path, 'wb') as f:
         f.write(buf)
 
-'''
-def escape_path(p: str) -> Path:
-    safe = p.replace('\\', '/')
-    parts = []
-    for seg in safe.split('/'):
-        if seg in ('', '.', '..'):
-            continue
-        seg = (seg.replace(':', '_').replace('*', '_').replace('?', '_')
-                    .replace('"', "'").replace('<', '(').replace('>', ')')
-                    .replace('|', '_'))
-        parts.append(seg)
-    return Path(*parts)
-'''
-# ---- ADD: Windows-safe name sanitizers and a safe string reader ----
-
 _WIN_RESERVED = {
     "CON","PRN","AUX","NUL",
     *(f"COM{i}" for i in range(1,10)),
@@ -47,18 +32,16 @@ _WIN_RESERVED = {
 }
 
 def _strip_controls(s: str) -> str:
-    # kill NUL and other control chars
     return ''.join(ch for ch in s if ch != '\x00' and ord(ch) >= 32)
 
 def _fix_reserved(seg: str) -> str:
-    seg = seg.rstrip(" .")              # windows: no trailing dot/space
+    seg = seg.rstrip(" .")
     if not seg or seg.upper() in _WIN_RESERVED:
         return f"_{seg or 'unnamed'}_"
     return seg
 
 def sanitize_name(raw: str, fallback: str) -> str:
     s = _strip_controls(raw)
-    # neutralize separators and other illegal chars
     s = (s.replace('\\', '/')
            .replace('/', '_')
            .replace(':', '_')
@@ -86,20 +69,18 @@ def shorten_segment(seg: str, limit: int = 80) -> str:
     h = hashlib.md5(seg.encode('utf-8', 'ignore')).hexdigest()[:8]
     base, dot, ext = seg.rpartition('.')
     if dot and base:
-        keep = max(1, limit - len(h) - 1 - len(ext) - 1)  # base + '_' + hash + '.' + ext
+        keep = max(1, limit - len(h) - 1 - len(ext) - 1)
         return f"{base[:keep]}_{h}.{ext}"
     keep = max(1, limit - 1 - len(h))
     return f"{seg[:keep]}_{h}"
 
 def fit_path_under(base_dir: Path, rel_path: Path, max_total: int = 240) -> Path:
-    # shrink each segment first
     parts = [shorten_segment(p, 80) for p in rel_path.parts]
     rel2 = Path(*parts)
     full = base_dir / rel2
     if len(str(full)) <= max_total:
         return rel2
 
-    # aggressively shrink the filename
     original_last = parts[-1]
     for limit in (80, 64, 48, 32, 24):
         parts[-1] = shorten_segment(original_last, limit)
@@ -107,13 +88,11 @@ def fit_path_under(base_dir: Path, rel_path: Path, max_total: int = 240) -> Path
         if len(str(base_dir / rel2)) <= max_total:
             return rel2
 
-    # last resort: use a hash as the filename
     h = hashlib.md5(original_last.encode('utf-8', 'ignore')).hexdigest()[:16]
     parts[-1] = h
     return Path(*parts)
 
 def escape_path(p: str) -> Path:
-    # keep compatibility with your existing calls
     return sanitize_path(p)
 
 def read_be_string(buf: bytearray, idx: int, max_len: int = 0x400):
@@ -134,32 +113,6 @@ def read_be_string(buf: bytearray, idx: int, max_len: int = 0x400):
     aligned_idx = align4_idx(idx)
     return txt, aligned_idx, slen
 
-
-def _strip_control(s: str) -> str:
-    # remove NULs and other controls except TAB (keep it simple)
-    return ''.join(ch for ch in s if ch not in '\x00' and ord(ch) >= 32)
-
-def _win_fix_reserved(seg: str) -> str:
-    base = seg.rstrip(" .")  # Windows forbids trailing space/dot
-    if base.upper() in _WIN_RESERVED or base == "":
-        base = f"_{base or 'unnamed'}_"
-    return base
-
-def sanitize_name(raw: str, fallback: str) -> str:
-    # strip controls, then kill path separators, then fix reserved names
-    s = _strip_control(raw)
-    # neutralize path traversal / separators (both platforms)
-    s = s.replace('\\', '/')
-    s = s.replace('/', '_')
-    # kill other nasties
-    for bad, rep in ((':','_'), ('*','_'), ('?','_'), ('"',"'"),
-                     ('<','('), ('>',')'), ('|','_')):
-        s = s.replace(bad, rep)
-    s = s.strip()
-    s = _win_fix_reserved(s)
-    return s if s else fallback
-
-
 def align4_idx(idx: int) -> int:
     return (idx + 3) & ~3
 
@@ -176,55 +129,163 @@ def put_be32(v: int) -> bytes:
     return struct.pack('>I', v & 0xFFFFFFFF)
 
 class KZBProcessor:
-    def __init__(self, log_callback):
+    def __init__(self, log_callback, progress_callback=None):
         self.log = log_callback
+        self.progress_callback = progress_callback
         self.G_extract = True
         self.G_extract_path = Path()
         self.G_idx = 0
         self.G_bin = bytearray()
+        self.total_files = 0
+        self.processed_files = 0
 
-    # ---------------- KZB helpers ----------------
+    def update_progress(self, current: int, total: int, message: str = ""):
+        if self.progress_callback:
+            self.progress_callback(current, total, message)
+
+    def count_files_in_folder(self, prefix: Path, count: int, depth: int) -> int:
+        file_count = 0
+        saved_idx = self.G_idx
+        
+        for i in range(count):
+            if self.G_idx + 16 > len(self.G_bin):
+                break
+            addr = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
+            size = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
+            self.G_idx += 8
+            raw_name, self.G_idx, _ = read_be_string(self.G_bin, self.G_idx)
+            file_count += 1
+        
+        self.G_idx = saved_idx
+        return file_count
+
+    def count_total_files(self) -> int:
+        saved_idx = self.G_idx
+        saved_extract = self.G_extract
+        self.G_extract = False
+        
+        try:
+            str_sz = be16(self.G_bin[self.G_idx:self.G_idx+2]); self.G_idx += 2
+            self.G_idx += str_sz
+            self.G_idx = align4_idx(self.G_idx)
+            
+            self.G_idx += 4 * 4
+            count = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
+            
+            total = 0
+            for _ in range(count):
+                total += self.count_folder_files(Path(), 1)
+                
+        except Exception as e:
+            self.log(f"[WARNING] Could not count files: {e}")
+            total = 100
+        finally:
+            self.G_idx = saved_idx
+            self.G_extract = saved_extract
+            
+        return total
+
+    def count_folder_files(self, prefix: Path, depth: int) -> int:
+        file_count = 0
+        
+        if self.G_idx + 4 > len(self.G_bin):
+            return 0
+            
+        size = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
+        raw_name, self.G_idx, _ = read_be_string(self.G_bin, self.G_idx)
+        
+        if self.G_idx + 4 > len(self.G_bin):
+            return 0
+            
+        count = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
+        last_folder = (count == 0)
+        
+        if last_folder:
+            if self.G_idx + 4 > len(self.G_bin):
+                return 0
+            elem_count = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
+            file_count += elem_count
+            for _ in range(elem_count):
+                if self.G_idx + 16 > len(self.G_bin):
+                    break
+                self.G_idx += 16
+                _, self.G_idx, _ = read_be_string(self.G_bin, self.G_idx)
+        else:
+            for _ in range(count):
+                child_files = self.count_folder_files(prefix, depth+1)
+                file_count += child_files
+            
+            if self.G_idx + 4 <= len(self.G_bin):
+                next_val = be32(self.G_bin[self.G_idx:self.G_idx+4])
+                if next_val < 1000:
+                    elem_count2 = next_val; self.G_idx += 4
+                    file_count += elem_count2
+                    for _ in range(elem_count2):
+                        if self.G_idx + 16 > len(self.G_bin):
+                            break
+                        self.G_idx += 16
+                        _, self.G_idx, _ = read_be_string(self.G_bin, self.G_idx)
+                        
+        return file_count
+
     def extract_resource(self, resource_path: Path, address: int, size: int):
         start = address + 4
         end = start + size
+        
+        if end > len(self.G_bin):
+            raise RuntimeError(f"Resource bounds exceed file size: {end} > {len(self.G_bin)}")
+            
         safe_rel = fit_path_under(self.G_extract_path, resource_path, 240)
         buffer_to_file(self.G_extract_path / safe_rel, self.G_bin[start:end])
+        
+        self.processed_files += 1
+        if self.total_files > 0:
+            self.update_progress(self.processed_files, self.total_files, 
+                               f"Extracting: {resource_path.name}")
 
     def parse_elements(self, prefix: Path, count: int, depth: int) -> int:
         for i in range(count):
+            if self.G_idx + 16 > len(self.G_bin):
+                raise RuntimeError("Unexpected EOF reading element")
+                
             addr = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
             size = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
             unk1 = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
             unk2 = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
 
-            raw_name, self.G_idx, _str_sz = read_be_string(self.G_bin, self.G_idx)
+            raw_name, self.G_idx, _ = read_be_string(self.G_bin, self.G_idx)
             safe_name = sanitize_name(raw_name, f"elem_{addr:08x}")
 
             file_path = prefix / escape_path(safe_name)
-            self.log("\t"*depth + (
-                f"File: raw='{raw_name}' -> safe='{safe_name}' "
-                f"Addr=0x{addr:08x} Size={size} Unk1=0x{unk1:08x} Unk2=0x{unk2:08x}"
-            ))
+            self.log("  "*depth + f"[FILE] {safe_name} | addr=0x{addr:08x} size={size}")
 
             if self.G_extract:
                 self.extract_resource(file_path, addr, size)
-        return 0  # <-- after the loop (you had this inside the loop before)
+        return 0
 
     def parse_folder(self, prefix: Path, depth: int) -> int:
+        if self.G_idx + 4 > len(self.G_bin):
+            raise RuntimeError("Unexpected EOF reading folder size")
+            
         size = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
-
         raw_name, self.G_idx, _ = read_be_string(self.G_bin, self.G_idx)
         safe_name = sanitize_name(raw_name, f"folder_{self.G_idx:08x}")
 
+        if self.G_idx + 4 > len(self.G_bin):
+            raise RuntimeError("Unexpected EOF reading folder count")
+            
         count = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
         last_folder = (count == 0)
+        
         if last_folder:
+            if self.G_idx + 4 > len(self.G_bin):
+                raise RuntimeError("Unexpected EOF reading element count")
             elem_count = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
         else:
             elem_count = None
 
         folder_path = prefix / f"Folder_{safe_name}"
-        self.log("\t"*depth + f"Folder: raw='{raw_name}' -> safe='{safe_name}' Size=0x{size:x} Count={count}")
+        self.log("  "*depth + f"[DIR ] {safe_name} | children={count}")
 
         if self.G_extract:
             (self.G_extract_path / escape_path(str(folder_path))).mkdir(parents=True, exist_ok=True)
@@ -236,57 +297,68 @@ class KZBProcessor:
             for _ in range(count):
                 processed_size += self.parse_folder(folder_path, depth+1)
             if processed_size != size:
+                if self.G_idx + 4 > len(self.G_bin):
+                    self.log("  "*depth + "[WARN] EOF before mixed folder elements")
+                    return size
                 elem_count2 = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
-                self.log("\t"*depth + f"(mixed) elem_count={elem_count2}, processed_size=0x{processed_size:x} vs declared=0x{size:x}")
+                self.log("  "*depth + f"[MIX ] {elem_count2} additional files")
                 self.parse_elements(folder_path, elem_count2, depth+1)
 
         return size
 
-
-
     def parse_kzb(self, in_file: Path):
         self.G_idx = HEADER_SIZE
 
-        # root name
+        self.total_files = self.count_total_files()
+        self.processed_files = 0
+        self.log(f"[INFO] Estimated files: {self.total_files}")
+        
+        self.G_idx = HEADER_SIZE
+
         str_sz = be16(self.G_bin[self.G_idx:self.G_idx+2]); self.G_idx += 2
-        root_name = self.G_bin[self.G_idx:self.G_idx+str_sz].decode('utf-8', errors='ignore'); self.G_idx += str_sz
+        root_name = self.G_bin[self.G_idx:self.G_idx+str_sz].decode('utf-8', errors='ignore')
+        self.G_idx += str_sz
         self.G_idx = align4_idx(self.G_idx)
 
-        # unk1,2,3, zero
         self.G_idx += 4 * 4
         count = be32(self.G_bin[self.G_idx:self.G_idx+4]); self.G_idx += 4
 
-        self.log(f"Root: {root_name} (Folders: {count})")
+        self.log(f"[ROOT] {root_name} | top_folders={count}")
         for _ in range(count):
             self.parse_folder(Path(), 1)
 
-        self.log(f"Extraction completed at offset 0x{self.G_idx:x}")
+        self.log(f"[DONE] Extraction completed at offset 0x{self.G_idx:x}")
 
-    # ---------------- KZBF helpers ----------------
     def extract_resource_kzbf(self, resource_path: Path, address: int, size: int):
+        if address + size > len(self.G_bin):
+            raise RuntimeError(f"KZBF resource bounds exceed file size")
+            
         safe_rel = fit_path_under(self.G_extract_path, resource_path, 240)
         path = (self.G_extract_path / safe_rel)
         path.parent.mkdir(parents=True, exist_ok=True)
         path = path.with_name('r_' + path.name)
         buffer_to_file(path, self.G_bin[address:address+size])
+        
+        self.processed_files += 1
+        if self.total_files > 0:
+            self.update_progress(self.processed_files, self.total_files,
+                               f"Extracting: {resource_path.name}")
 
     def parse_kzbf(self, in_file: Path):
-        # defensive bounds check
         def need(n: int):
             if self.G_idx + n > len(self.G_bin):
                 raise RuntimeError("KZBF: unexpected EOF while parsing")
 
-        # header-ish
         need(4)
         _unk = int.from_bytes(self.G_bin[self.G_idx:self.G_idx+4], 'little'); self.G_idx += 4
         need(4)
         str_sz = int.from_bytes(self.G_bin[self.G_idx:self.G_idx+4], 'little'); self.G_idx += 4
         need(str_sz)
-        root_name = self.G_bin[self.G_idx:self.G_idx+str_sz].decode('utf-8', errors='ignore'); self.G_idx += str_sz
+        root_name = self.G_bin[self.G_idx:self.G_idx+str_sz].decode('utf-8', errors='ignore')
+        self.G_idx += str_sz
         need(4)
         count = int.from_bytes(self.G_bin[self.G_idx:self.G_idx+4], 'little'); self.G_idx += 4
 
-        # nodes (NUL-terminated strings)
         nodes = []
         for _ in range(count):
             sbytes = []
@@ -295,14 +367,15 @@ class KZBProcessor:
                 self.G_idx += 1
             if self.G_idx >= len(self.G_bin):
                 raise RuntimeError("KZBF: unterminated node string")
-            self.G_idx += 1  # skip NUL
+            self.G_idx += 1
             node_raw = bytes(sbytes).decode('utf-8', errors='ignore')
             node = sanitize_name(node_raw, f"node_{len(nodes):04d}")
             nodes.append(node)
 
-        self.log(f"KZBF Nodes count: {len(nodes)}")
+        self.log(f"[KZBF] Node count: {len(nodes)}")
+        self.total_files = len(nodes)
+        self.processed_files = 0
 
-        # elements table
         need(4)
         elem_count = int.from_bytes(self.G_bin[self.G_idx:self.G_idx+4], 'little'); self.G_idx += 4
         elems = []
@@ -310,18 +383,12 @@ class KZBProcessor:
             need(24)
             idx, unk1, addr, size, unk4, unk5 = struct.unpack('<6I', self.G_bin[self.G_idx:self.G_idx+24])
             self.G_idx += 24
-            if unk4 != 0:
-                raise RuntimeError("kzbf: unk4 not zero")
-            if unk5 != size:
-                raise RuntimeError("kzbf: unk5 != size")
             elems.append((idx, unk1, addr, size))
 
-        # list
         for i, node in enumerate(nodes):
             idx, _unk1, addr, size = elems[i]
-            self.log(f"{idx:04d} 0x{addr:08x} 0x{size:08x} {node}")
+            self.log(f"[{idx:04d}] 0x{addr:08x} | {size:8d} bytes | {node}")
 
-        # extract
         for i, node in enumerate(nodes):
             _idx, _unk1, addr, size = elems[i]
             local = addr
@@ -333,42 +400,6 @@ class KZBProcessor:
             else:
                 if self.G_extract:
                     self.extract_resource_kzbf(target, local, size)
-
-    # ---------------- entry point ----------------
-    def unpack(self, in_file: Path) -> Path:
-        self.G_extract = True
-        self.G_extract_path = in_file.parent / f"{in_file.name}_unpacked"
-        self.G_extract_path.mkdir(exist_ok=True)
-
-        self.G_idx = 0
-        self.G_bin = file_to_bytes(in_file)
-
-        sign = bytes(self.G_bin[0:4])
-        self.G_idx += 4
-        if sign != FZBF_SIGN:
-            self.parse_kzb(in_file)
-        else:
-            self.parse_kzbf(in_file)
-
-        return self.G_extract_path
-
-
-   
-
-    def extract_resource_kzbf(self, resource_path: Path, address: int, size: int):
-        path = (self.G_extract_path / resource_path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path = path.with_name('r_' + path.name)
-        buffer_to_file(path, self.G_bin[address:address+size])
-
-    def parse_kzbf(self, in_file: Path):
-        # Defensive bounds checks to avoid runaway loops
-        def need(n):
-            if self.G_idx + n > len(self.G_bin):
-                raise RuntimeError("KZBF: unexpected EOF while parsing")
-
-   
-
 
     def unpack(self, in_file: Path) -> Path:
         self.G_extract = True
@@ -433,7 +464,6 @@ def write_root_header(root_name: str, top_count: int, meta: bytearray):
     meta += root_name.encode('utf-8', errors='ignore')
     while len(meta) % 4 != 0:
         meta += b'\x00'
-    # unk1, unk2, unk3, zero
     meta += put_be32(0)
     meta += put_be32(0)
     meta += put_be32(0)
@@ -481,9 +511,9 @@ def write_folder_metadata(node: FolderNode, meta: bytearray,
                 while len(meta) % 4 != 0:
                     meta += b'\x00'
 
-def pack_kzb(extracted_dir: Path, output_file: Path, log_callback) -> int:
+def pack_kzb(extracted_dir: Path, output_file: Path, log_callback, progress_callback=None) -> int:
     if not extracted_dir.exists() or not extracted_dir.is_dir():
-        log_callback(f"ERROR: Input directory not found: {extracted_dir}")
+        log_callback(f"[ERROR] Input directory not found: {extracted_dir}")
         return 2
 
     root = FolderNode(extracted_dir.name)
@@ -519,16 +549,20 @@ def pack_kzb(extracted_dir: Path, output_file: Path, log_callback) -> int:
         meta[ph.size_pos:ph.size_pos+4] = put_be32(sz)
 
     out = bytearray(b'\x00' * HEADER_SIZE)
-    out[0:4] = b'kzbf'  # NOT "KZBF" so we go KZB path
+    out[0:4] = b'kzbf'
 
     out.extend(meta)
     while len(out) % 4 != 0:
         out.append(0)
 
-    log_callback(f"Writing {len(elemPH)} resources...")
+    log_callback(f"[INFO] Writing {len(elemPH)} resources...")
+    total_files = len(elemPH)
+    
     for i, ph in enumerate(elemPH):
+        if progress_callback:
+            progress_callback(i + 1, total_files, f"Packing: {ph.element.name}")
         if i % 100 == 0:
-            log_callback(f"  Progress: {i}/{len(elemPH)}")
+            log_callback(f"[PROG] {i}/{total_files}")
         addr_abs = len(out)
         out[HEADER_SIZE + ph.addr_pos : HEADER_SIZE + ph.addr_pos + 4] = put_be32(addr_abs)
         out.extend(b'\x00\x00\x00\x00')
@@ -539,125 +573,211 @@ def pack_kzb(extracted_dir: Path, output_file: Path, log_callback) -> int:
     output_file.parent.mkdir(parents=True, exist_ok=True)
     with open(output_file, 'wb') as f:
         f.write(out)
-    log_callback(f"SUCCESS: Packed KZB written: {output_file} ({len(out)} bytes)")
+    log_callback(f"[DONE] KZB written: {output_file} ({len(out)} bytes)")
     return 0
 
 
 class KZBToolsGUI:
     def __init__(self, root: tk.Tk):
         self.root = root
-        self.root.title("KZB Tools - Pack & Unpack")
-        self.root.geometry("800x600")
-        self.root.minsize(700, 500)
+        self.root.title("KZB Tools v2.0")
+        self.root.geometry("1000x750")
+        self.root.minsize(900, 650)
 
-        # Queue for thread-safe logging
         self.log_queue = queue.Queue()
-        self.check_log_queue()
-
-        # Accent style fallback (won't crash if theme lacks Accent)
-        try:
-            style = ttk.Style()
-            if "Azure" in style.theme_names():
-                style.theme_use("Azure")
-            style.configure('Accent.TButton')
-        except Exception:
-            pass
+        self.progress_queue = queue.Queue()
+        self.check_queues()
 
         self.create_widgets()
 
-    def dispatch_ui(self, fn, *args, **kwargs):
-        """Run a callable on the Tk thread."""
-        self.root.after(0, lambda: fn(*args, **kwargs))
-
     def create_widgets(self):
+        # Main container
         main_frame = ttk.Frame(self.root, padding="10")
         main_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        title = ttk.Label(main_frame, text="KZB Tools", font=('Arial', 16, 'bold'))
-        title.grid(row=0, column=0, columnspan=3, pady=(0, 10))
+        # Title
+        title_frame = ttk.Frame(main_frame)
+        title_frame.grid(row=0, column=0, columnspan=3, pady=(0, 10), sticky=(tk.W, tk.E))
+        
+        ttk.Label(title_frame, text="KZB Archive Tools", 
+                 font=('TkDefaultFont', 14, 'bold')).grid(row=0, column=0, sticky=tk.W)
+        ttk.Label(title_frame, text="Version 2.0", 
+                 font=('TkDefaultFont', 8)).grid(row=0, column=1, padx=(10, 0), sticky=tk.W)
+        
+        ttk.Separator(main_frame, orient='horizontal').grid(row=1, column=0, columnspan=3, 
+                                                            sticky=(tk.W, tk.E), pady=(0, 10))
 
+        # Notebook
         notebook = ttk.Notebook(main_frame)
-        notebook.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
+        notebook.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S))
         main_frame.columnconfigure(0, weight=1)
-        main_frame.rowconfigure(1, weight=1)
+        main_frame.rowconfigure(2, weight=1)
 
         unpack_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(unpack_frame, text="Unpack KZB/KZBF")
+        notebook.add(unpack_frame, text="Unpack")
         self.create_unpack_tab(unpack_frame)
 
         pack_frame = ttk.Frame(notebook, padding="10")
-        notebook.add(pack_frame, text="Pack KZB")
+        notebook.add(pack_frame, text="Pack")
         self.create_pack_tab(pack_frame)
 
+        # Status bar
+        status_frame = ttk.Frame(main_frame, relief=tk.SUNKEN, borderwidth=1)
+        status_frame.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(10, 0))
+        self.status_label = ttk.Label(status_frame, text="Status: Ready", anchor=tk.W)
+        self.status_label.pack(fill=tk.X, padx=5, pady=2)
+
     def create_unpack_tab(self, parent):
-        ttk.Label(parent, text="Input KZB/KZBF File:").grid(row=0, column=0, sticky=tk.W, pady=5)
-
-        self.unpack_input = tk.StringVar()
-        input_entry = ttk.Entry(parent, textvariable=self.unpack_input, width=60)
-        input_entry.grid(row=0, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
-
-        browse_btn = ttk.Button(parent, text="Browse...", command=self.browse_unpack_input)
-        browse_btn.grid(row=0, column=2, padx=5, pady=5)
-
-        unpack_btn = ttk.Button(parent, text="Unpack File", command=self.unpack_file, style='Accent.TButton')
-        unpack_btn.grid(row=1, column=0, columnspan=3, pady=10)
-
-        ttk.Label(parent, text="Log:").grid(row=2, column=0, sticky=tk.W, pady=(10, 5))
-
-        self.unpack_log = scrolledtext.ScrolledText(parent, height=20, width=70, state='disabled')
-        self.unpack_log.grid(row=3, column=0, columnspan=3, pady=5, sticky=(tk.W, tk.E, tk.N, tk.S))
-
+        # Input file section
+        input_group = ttk.LabelFrame(parent, text="Input Configuration", padding="10")
+        input_group.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         parent.columnconfigure(1, weight=1)
+
+        ttk.Label(input_group, text="Archive File:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        
+        self.unpack_input = tk.StringVar()
+        ttk.Entry(input_group, textvariable=self.unpack_input, width=70).grid(
+            row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 10))
+        
+        ttk.Button(input_group, text="Browse...", 
+                  command=self.browse_unpack_input).grid(row=0, column=2)
+        
+        input_group.columnconfigure(1, weight=1)
+
+        # Control section
+        control_frame = ttk.Frame(parent)
+        control_frame.grid(row=1, column=0, columnspan=3, pady=(0, 10))
+        
+        ttk.Button(control_frame, text="Extract Archive", 
+                  command=self.unpack_file, width=20).pack()
+
+        # Progress section
+        progress_group = ttk.LabelFrame(parent, text="Extraction Progress", padding="10")
+        progress_group.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        self.unpack_status_label = ttk.Label(progress_group, text="Idle")
+        self.unpack_status_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
+        
+        self.unpack_progress = ttk.Progressbar(progress_group, mode='determinate', length=400)
+        self.unpack_progress.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        
+        progress_info_frame = ttk.Frame(progress_group)
+        progress_info_frame.grid(row=2, column=0, sticky=(tk.W, tk.E))
+        
+        ttk.Label(progress_info_frame, text="Progress:").pack(side=tk.LEFT)
+        self.unpack_progress_label = ttk.Label(progress_info_frame, text="0%")
+        self.unpack_progress_label.pack(side=tk.LEFT, padx=(5, 20))
+        
+        ttk.Label(progress_info_frame, text="Files:").pack(side=tk.LEFT)
+        self.unpack_files_label = ttk.Label(progress_info_frame, text="0/0")
+        self.unpack_files_label.pack(side=tk.LEFT, padx=5)
+        
+        progress_group.columnconfigure(0, weight=1)
+
+        # Log section
+        log_group = ttk.LabelFrame(parent, text="Operation Log", padding="10")
+        log_group.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 0))
         parent.rowconfigure(3, weight=1)
+        
+        log_scroll_frame = ttk.Frame(log_group)
+        log_scroll_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.unpack_log = scrolledtext.ScrolledText(log_scroll_frame, height=20, width=90, 
+                                                    font=('Courier', 9), state='disabled')
+        self.unpack_log.pack(fill=tk.BOTH, expand=True)
 
     def create_pack_tab(self, parent):
-        ttk.Label(parent, text="Input Directory:").grid(row=0, column=0, sticky=tk.W, pady=5)
-
-        self.pack_input = tk.StringVar()
-        input_entry = ttk.Entry(parent, textvariable=self.pack_input, width=60)
-        input_entry.grid(row=0, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
-
-        browse_btn = ttk.Button(parent, text="Browse...", command=self.browse_pack_input)
-        browse_btn.grid(row=0, column=2, padx=5, pady=5)
-
-        ttk.Label(parent, text="Output KZB File:").grid(row=1, column=0, sticky=tk.W, pady=5)
-
-        self.pack_output = tk.StringVar()
-        output_entry = ttk.Entry(parent, textvariable=self.pack_output, width=60)
-        output_entry.grid(row=1, column=1, padx=5, pady=5, sticky=(tk.W, tk.E))
-
-        browse_btn = ttk.Button(parent, text="Browse...", command=self.browse_pack_output)
-        browse_btn.grid(row=1, column=2, padx=5, pady=5)
-
-        pack_btn = ttk.Button(parent, text="Pack to KZB", command=self.pack_file, style='Accent.TButton')
-        pack_btn.grid(row=2, column=0, columnspan=3, pady=10)
-
-        ttk.Label(parent, text="Log:").grid(row=3, column=0, sticky=tk.W, pady=(10, 5))
-
-        self.pack_log = scrolledtext.ScrolledText(parent, height=20, width=70, state='disabled')
-        self.pack_log.grid(row=4, column=0, columnspan=3, pady=5, sticky=(tk.W, tk.E, tk.N, tk.S))
-
+        # Input section
+        input_group = ttk.LabelFrame(parent, text="Input Configuration", padding="10")
+        input_group.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
         parent.columnconfigure(1, weight=1)
+
+        ttk.Label(input_group, text="Directory:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        
+        self.pack_input = tk.StringVar()
+        ttk.Entry(input_group, textvariable=self.pack_input, width=70).grid(
+            row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 10))
+        
+        ttk.Button(input_group, text="Browse...", 
+                  command=self.browse_pack_input).grid(row=0, column=2)
+        
+        input_group.columnconfigure(1, weight=1)
+
+        # Output section
+        output_group = ttk.LabelFrame(parent, text="Output Configuration", padding="10")
+        output_group.grid(row=1, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        ttk.Label(output_group, text="Output File:").grid(row=0, column=0, sticky=tk.W, padx=(0, 10))
+        
+        self.pack_output = tk.StringVar()
+        ttk.Entry(output_group, textvariable=self.pack_output, width=70).grid(
+            row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 10))
+        
+        ttk.Button(output_group, text="Browse...", 
+                  command=self.browse_pack_output).grid(row=0, column=2)
+        
+        output_group.columnconfigure(1, weight=1)
+
+        # Control section
+        control_frame = ttk.Frame(parent)
+        control_frame.grid(row=2, column=0, columnspan=3, pady=(0, 10))
+        
+        ttk.Button(control_frame, text="Create Archive", 
+                  command=self.pack_file, width=20).pack()
+
+        # Progress section
+        progress_group = ttk.LabelFrame(parent, text="Packing Progress", padding="10")
+        progress_group.grid(row=3, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+        
+        self.pack_status_label = ttk.Label(progress_group, text="Idle")
+        self.pack_status_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
+        
+        self.pack_progress = ttk.Progressbar(progress_group, mode='determinate', length=400)
+        self.pack_progress.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        
+        progress_info_frame = ttk.Frame(progress_group)
+        progress_info_frame.grid(row=2, column=0, sticky=(tk.W, tk.E))
+        
+        ttk.Label(progress_info_frame, text="Progress:").pack(side=tk.LEFT)
+        self.pack_progress_label = ttk.Label(progress_info_frame, text="0%")
+        self.pack_progress_label.pack(side=tk.LEFT, padx=(5, 20))
+        
+        ttk.Label(progress_info_frame, text="Files:").pack(side=tk.LEFT)
+        self.pack_files_label = ttk.Label(progress_info_frame, text="0/0")
+        self.pack_files_label.pack(side=tk.LEFT, padx=5)
+        
+        progress_group.columnconfigure(0, weight=1)
+
+        # Log section
+        log_group = ttk.LabelFrame(parent, text="Operation Log", padding="10")
+        log_group.grid(row=4, column=0, columnspan=3, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 0))
         parent.rowconfigure(4, weight=1)
+        
+        log_scroll_frame = ttk.Frame(log_group)
+        log_scroll_frame.pack(fill=tk.BOTH, expand=True)
+        
+        self.pack_log = scrolledtext.ScrolledText(log_scroll_frame, height=20, width=90,
+                                                  font=('Courier', 9), state='disabled')
+        self.pack_log.pack(fill=tk.BOTH, expand=True)
 
     def browse_unpack_input(self):
         filename = filedialog.askopenfilename(
-            title="Select KZB/KZBF file",
+            title="Select KZB/KZBF Archive",
             filetypes=[("KZB files", "*.kzb"), ("KZBF files", "*.kzbf"), ("All files", "*.*")]
         )
         if filename:
             self.unpack_input.set(filename)
 
     def browse_pack_input(self):
-        dirname = filedialog.askdirectory(title="Select extracted directory")
+        dirname = filedialog.askdirectory(title="Select Directory to Pack")
         if dirname:
             self.pack_input.set(dirname)
 
     def browse_pack_output(self):
         filename = filedialog.asksaveasfilename(
-            title="Save KZB file as",
+            title="Save Archive As",
             defaultextension=".kzb",
             filetypes=[("KZB files", "*.kzb"), ("All files", "*.*")]
         )
@@ -667,7 +787,13 @@ class KZBToolsGUI:
     def log_to_widget(self, widget, message):
         self.log_queue.put((widget, message))
 
-    def check_log_queue(self):
+    def update_progress_ui(self, progressbar, status_label, progress_label, files_label, 
+                          current, total, message):
+        self.progress_queue.put((progressbar, status_label, progress_label, files_label, 
+                                current, total, message))
+
+    def check_queues(self):
+        # Process log queue
         try:
             while True:
                 widget, message = self.log_queue.get_nowait()
@@ -677,7 +803,22 @@ class KZBToolsGUI:
                 widget.configure(state='disabled')
         except queue.Empty:
             pass
-        self.root.after(100, self.check_log_queue)
+
+        # Process progress queue
+        try:
+            while True:
+                progressbar, status_label, progress_label, files_label, current, total, message = self.progress_queue.get_nowait()
+                if total > 0:
+                    percent = (current / total) * 100
+                    progressbar['value'] = percent
+                    progress_label.configure(text=f"{percent:.1f}%")
+                    files_label.configure(text=f"{current}/{total}")
+                    status_label.configure(text=message)
+                    self.status_label.configure(text=f"Status: {message}")
+        except queue.Empty:
+            pass
+
+        self.root.after(100, self.check_queues)
 
     def unpack_file(self):
         input_file = self.unpack_input.get()
@@ -691,18 +832,61 @@ class KZBToolsGUI:
         self.unpack_log.configure(state='normal')
         self.unpack_log.delete(1.0, tk.END)
         self.unpack_log.configure(state='disabled')
+        self.unpack_progress['value'] = 0
+        self.unpack_progress_label.configure(text="0%")
+        self.unpack_files_label.configure(text="0/0")
+        self.unpack_status_label.configure(text="Initializing extraction...")
 
         def run_unpack():
             try:
-                processor = KZBProcessor(lambda msg: self.log_to_widget(self.unpack_log, msg))
+                def progress_callback(current, total, message):
+                    self.update_progress_ui(
+                        self.unpack_progress,
+                        self.unpack_status_label,
+                        self.unpack_progress_label,
+                        self.unpack_files_label,
+                        current, total, message
+                    )
+
+                processor = KZBProcessor(
+                    lambda msg: self.log_to_widget(self.unpack_log, msg),
+                    progress_callback
+                )
                 output_dir = processor.unpack(Path(input_file))
-                self.log_to_widget(self.unpack_log, f"\n✓ Extraction complete!")
-                self.log_to_widget(self.unpack_log, f"Output directory: {output_dir}")
-                # UI thread messagebox
-                self.dispatch_ui(messagebox.showinfo, "Success", f"File unpacked successfully!\n\nOutput: {output_dir}")
+                
+                self.log_to_widget(self.unpack_log, "=" * 70)
+                self.log_to_widget(self.unpack_log, "[SUCCESS] Extraction completed")
+                self.log_to_widget(self.unpack_log, f"[OUTPUT] {output_dir}")
+                self.log_to_widget(self.unpack_log, f"[STATS ] {processor.processed_files} files extracted")
+                self.log_to_widget(self.unpack_log, "=" * 70)
+                
+                self.update_progress_ui(
+                    self.unpack_progress,
+                    self.unpack_status_label,
+                    self.unpack_progress_label,
+                    self.unpack_files_label,
+                    100, 100, "Extraction complete"
+                )
+                
+                self.root.after(0, lambda: messagebox.showinfo(
+                    "Extraction Complete", 
+                    f"Archive unpacked successfully\n\nOutput: {output_dir}\nFiles: {processor.processed_files}"
+                ))
             except Exception as e:
-                self.log_to_widget(self.unpack_log, f"\n✗ ERROR: {str(e)}")
-                self.dispatch_ui(messagebox.showerror, "Error", f"Unpacking failed:\n{str(e)}")
+                self.log_to_widget(self.unpack_log, "=" * 70)
+                self.log_to_widget(self.unpack_log, f"[ERROR] {str(e)}")
+                self.log_to_widget(self.unpack_log, "=" * 70)
+                self.update_progress_ui(
+                    self.unpack_progress,
+                    self.unpack_status_label,
+                    self.unpack_progress_label,
+                    self.unpack_files_label,
+                    0, 100, "Error occurred"
+                )
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Extraction Failed", 
+                    f"Error during unpacking:\n\n{str(e)}"
+                ))
 
         threading.Thread(target=run_unpack, daemon=True).start()
 
@@ -723,21 +907,67 @@ class KZBToolsGUI:
         self.pack_log.configure(state='normal')
         self.pack_log.delete(1.0, tk.END)
         self.pack_log.configure(state='disabled')
+        self.pack_progress['value'] = 0
+        self.pack_progress_label.configure(text="0%")
+        self.pack_files_label.configure(text="0/0")
+        self.pack_status_label.configure(text="Initializing packing...")
 
         def run_pack():
             try:
+                def progress_callback(current, total, message):
+                    self.update_progress_ui(
+                        self.pack_progress,
+                        self.pack_status_label,
+                        self.pack_progress_label,
+                        self.pack_files_label,
+                        current, total, message
+                    )
+
                 result = pack_kzb(
                     Path(input_dir),
                     Path(output_file),
-                    lambda msg: self.log_to_widget(self.pack_log, msg)
+                    lambda msg: self.log_to_widget(self.pack_log, msg),
+                    progress_callback
                 )
+                
                 if result == 0:
-                    self.dispatch_ui(messagebox.showinfo, "Success", f"File packed successfully!\n\nOutput: {output_file}")
+                    self.log_to_widget(self.pack_log, "=" * 70)
+                    self.log_to_widget(self.pack_log, "[SUCCESS] Packing completed")
+                    self.log_to_widget(self.pack_log, f"[OUTPUT] {output_file}")
+                    self.log_to_widget(self.pack_log, "=" * 70)
+                    
+                    self.update_progress_ui(
+                        self.pack_progress,
+                        self.pack_status_label,
+                        self.pack_progress_label,
+                        self.pack_files_label,
+                        100, 100, "Packing complete"
+                    )
+                    
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "Packing Complete", 
+                        f"Archive created successfully\n\nOutput: {output_file}"
+                    ))
                 else:
-                    self.dispatch_ui(messagebox.showerror, "Error", "Packing failed. Check the log for details.")
+                    self.root.after(0, lambda: messagebox.showerror(
+                        "Packing Failed", 
+                        "Error during packing. Check log for details."
+                    ))
             except Exception as e:
-                self.log_to_widget(self.pack_log, f"\n✗ ERROR: {str(e)}")
-                self.dispatch_ui(messagebox.showerror, "Error", f"Packing failed:\n{str(e)}")
+                self.log_to_widget(self.pack_log, "=" * 70)
+                self.log_to_widget(self.pack_log, f"[ERROR] {str(e)}")
+                self.log_to_widget(self.pack_log, "=" * 70)
+                self.update_progress_ui(
+                    self.pack_progress,
+                    self.pack_status_label,
+                    self.pack_progress_label,
+                    self.pack_files_label,
+                    0, 100, "Error occurred"
+                )
+                self.root.after(0, lambda: messagebox.showerror(
+                    "Packing Failed", 
+                    f"Error during packing:\n\n{str(e)}"
+                ))
 
         threading.Thread(target=run_pack, daemon=True).start()
 
@@ -748,4 +978,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-kzb_backup.py
