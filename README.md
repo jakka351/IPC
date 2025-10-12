@@ -11,8 +11,8 @@ Reversing Mustang Cluster Firmware to modify the bootsplash graphics/video with 
   ![SPtoTR_1](https://github.com/user-attachments/assets/abc2794b-d578-4dfc-b928-def5ad99f991)
 
 
-`Anonymous Automotive Alliance is at it again`  
-<img width="1568" height="823" alt="image" src="https://github.com/user-attachments/assets/f878e225-39b3-4e64-a6ea-9e690fd58ea3" />
+## `Anonymous Automotive Alliance is at it again`  
+
 <img width="10%" height="10%" align="right" alt="image" src="https://github.com/user-attachments/assets/ebccaf05-76d4-49a8-a429-7d21a6052dbd" />
 
 ## Overview of works  
