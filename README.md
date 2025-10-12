@@ -8,7 +8,8 @@ Reversing Mustang Cluster Firmware to modify the bootsplash graphics/video with 
 <img width="1568" height="823" alt="image" src="https://github.com/user-attachments/assets/f878e225-39b3-4e64-a6ea-9e690fd58ea3" />
 <img width="10%" height="10%" align="right" alt="image" src="https://github.com/user-attachments/assets/ebccaf05-76d4-49a8-a429-7d21a6052dbd" />
 
-## Overview of works
+## Overview of works  
+### 11/10/2025  
 1. Unpacking of `vbf` firmware file to yield `bin` file using `python-VBF.py`.
   
 2. Extraction of `cluster.kzb` from `bitmaps.bin` using `dumpifs`.
@@ -22,6 +23,8 @@ The next steps are to delve into the `kanzi` filesystem which is from the output
 We must figure out how to edit the `Kanzi` filesystem files and how to repack them into a `kzb` file, and then pack that pack into a binary file, and finally package it all up back in a `vbf` file ready for flashing to a cluster.  
 
 `jakka351` `11/10/2025`    
+
+### 12/10/2025  
 I am currently working on a better unpacker of the `kzb` file, as it appearts there is some corruption in the currently unpacked version we have in this repo. I have also started on a re-packer which I have posted `https://github.com/jakka351/Python-KZB` and here `https://github.com/jakka351/kzbTools`. I almost have the unpacking process downpat, and have useable images in directories ready to be edited. The next big step is re-packing the folder structure to a `.kzb` file. Jason F is currently working on repacking `bitmaps.bin.tar` so we are making some good progress towards the goal of flashing a modified VBF file to a cluster.  
   
 
