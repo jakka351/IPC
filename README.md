@@ -12,7 +12,10 @@ Reversing Mustang Cluster Firmware to modify the bootsplash graphics/video with 
 
 
 ## `Anonymous Automotive Alliance is at it again`  
-The mysterious collective is back from the shadows, iron in one hand, hex in the other, walking up on VBF like it owes rent. We’re stripping layers, tagging the weird shit, and charting the whole ecosystem. This isn’t vandalism—it’s vision. Proprietary ≠ untouchable. Each checksum we break is another lock off your car. VBF’s on the table now; next up is whatever file format thinks it’s safe behind corporate curtains.
+
+<sup>
+The mysterious collective is back from the shadows, iron in one hand, hex in the other, walking up on VBF like it owes rent. We’re stripping layers, tagging the weird shit, and charting the whole ecosystem. This isn’t vandalism—it’s vision. Proprietary ≠ untouchable. Each checksum we break is another lock off your car. VBF’s on the table now; next up is whatever file format thinks it’s safe behind corporate curtains.</sup>
+  
 <img width="10%" height="10%" align="right" alt="image" src="https://github.com/user-attachments/assets/ebccaf05-76d4-49a8-a429-7d21a6052dbd" />
 
 ## Overview of works  
