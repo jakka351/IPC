@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""
-Combined Engineering Utility - KZB & VBF Tools
-Thread-safe GUI with progress monitoring
-By Jakka351
-"""
-
+###################################################################
+#
+#         ____.       __    __           ________  .____________ 
+#        |    |____  |  | _|  | _______  \_____  \ |   ____/_   |
+#        |    \__  \ |  |/ /  |/ /\__  \   _(__  < |____  \ |   |
+#    /\__|    |/ __ \|    <|    <  / __ \_/       \/       \|   |
+#    \________(____  /__|_ \__|_ \(____  /______  /______  /|___|
+#                  \/     \/    \/     \/       \/       \/      
+#
+###################################################################
 from __future__ import annotations
 import re
 import zlib
@@ -15,6 +19,7 @@ import struct
 import threading
 import queue
 import hashlib
+import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Optional, Callable
@@ -1013,7 +1018,7 @@ DISABLE_UI = "DISABLE_UI"
 class CombinedEngineeringTool(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Combined Engineering Tool - KZB & VBF Tools")
+        self.title("Ford Firmware Engineering Tool - Jakka351")
         self.geometry("1280x850")
         self.minsize(1100, 750)
         
@@ -1034,6 +1039,10 @@ class CombinedEngineeringTool(tk.Tk):
         self.vbf_use_lzss = tk.BooleanVar(value=True)
         self.vbf_do_file_crc = tk.BooleanVar(value=True)
         self.vbf_crc_scope = tk.StringVar(value="whole_file_zeroed_field")
+        
+        # TAR state
+        self.tar_files: List[Path] = []
+        self.tar_compression = tk.StringVar(value="none")
         
         # Worker machinery
         self._worker_thread: Optional[threading.Thread] = None
@@ -1062,9 +1071,9 @@ class CombinedEngineeringTool(tk.Tk):
         # Title
         title_frame = ttk.Frame(main_frame)
         title_frame.pack(fill='x', pady=(0, 10))
-        ttk.Label(title_frame, text="Combined Engineering Tool - KZB & VBF", 
+        ttk.Label(title_frame, text="Ford Firmware Engineering Tool", 
                  font=('TkDefaultFont', 14, 'bold')).pack(side='left')
-        ttk.Label(title_frame, text="v3.0", 
+        ttk.Label(title_frame, text="v3.2", 
                  font=('TkDefaultFont', 8)).pack(side='left', padx=(10, 0))
         
         ttk.Separator(main_frame, orient='horizontal').pack(fill='x', pady=(0, 10))
@@ -1087,6 +1096,11 @@ class CombinedEngineeringTool(tk.Tk):
         bitmaps_frame = ttk.Frame(self.main_notebook, padding="10")
         self.main_notebook.add(bitmaps_frame, text="Bitmaps Builder")
         self._build_bitmaps_ui(bitmaps_frame)
+        
+        # TAR Archive Builder Tab
+        tar_frame = ttk.Frame(self.main_notebook, padding="10")
+        self.main_notebook.add(tar_frame, text="TAR Archive Builder")
+        self._build_tar_ui(tar_frame)
         
         # Status bar
         status_frame = ttk.Frame(main_frame, relief=tk.SUNKEN, borderwidth=1)
@@ -1235,6 +1249,25 @@ class CombinedEngineeringTool(tk.Tk):
         self.vbf_lbl_file.pack(side='left')
         self.vbf_lbl_out = ttk.Label(info_frame, text="Output: (not set)")
         self.vbf_lbl_out.pack(side='right')
+        
+        # Progress section (NEW)
+        progress_group = ttk.LabelFrame(parent, text="Extraction Progress", padding="10")
+        progress_group.pack(fill='x', pady=(0, 10))
+        
+        self.vbf_unpack_status_label = ttk.Label(progress_group, text="Idle")
+        self.vbf_unpack_status_label.pack(anchor='w', pady=(0, 5))
+        
+        self.vbf_unpack_progress = ttk.Progressbar(progress_group, mode='determinate')
+        self.vbf_unpack_progress.pack(fill='x', pady=(0, 5))
+        
+        progress_info = ttk.Frame(progress_group)
+        progress_info.pack(fill='x')
+        ttk.Label(progress_info, text="Progress:").pack(side='left')
+        self.vbf_unpack_progress_label = ttk.Label(progress_info, text="0%")
+        self.vbf_unpack_progress_label.pack(side='left', padx=(5, 20))
+        ttk.Label(progress_info, text="Blocks:").pack(side='left')
+        self.vbf_unpack_blocks_label = ttk.Label(progress_info, text="0/0")
+        self.vbf_unpack_blocks_label.pack(side='left', padx=5)
         
         # Paned window
         paned = ttk.PanedWindow(parent, orient='horizontal')
@@ -1451,6 +1484,110 @@ class CombinedEngineeringTool(tk.Tk):
                                                      font=('Courier', 9), state='disabled')
         self.bitmaps_log.pack(fill='both', expand=True)
 
+    def _build_tar_ui(self, parent):
+        # Title and description
+        title_frame = ttk.Frame(parent)
+        title_frame.pack(fill='x', pady=(0, 10))
+        ttk.Label(title_frame, text="TAR Archive Builder", 
+                 font=('TkDefaultFont', 12, 'bold')).pack(anchor='w')
+        ttk.Label(title_frame, text="Create TAR archives from binary files with optional compression", 
+                 font=('TkDefaultFont', 9), foreground='gray').pack(anchor='w')
+        
+        ttk.Separator(parent, orient='horizontal').pack(fill='x', pady=(0, 15))
+        
+        # File list section
+        files_group = ttk.LabelFrame(parent, text="Files to Archive", padding="15")
+        files_group.pack(fill='both', expand=True, pady=(0, 10))
+        
+        # Treeview for file list
+        cols = ("#", "filename", "size", "path")
+        self.tar_tree = ttk.Treeview(files_group, columns=cols, show='headings', selectmode='browse', height=12)
+        self.tar_tree.heading("#", text="#")
+        self.tar_tree.column("#", width=40, anchor='e')
+        self.tar_tree.heading("filename", text="Filename")
+        self.tar_tree.column("filename", width=200)
+        self.tar_tree.heading("size", text="Size")
+        self.tar_tree.column("size", width=100, anchor='e')
+        self.tar_tree.heading("path", text="Full Path")
+        self.tar_tree.column("path", width=400)
+        
+        scrollbar = ttk.Scrollbar(files_group, orient='vertical', command=self.tar_tree.yview)
+        self.tar_tree.configure(yscrollcommand=scrollbar.set)
+        
+        self.tar_tree.pack(side='left', fill='both', expand=True)
+        scrollbar.pack(side='right', fill='y')
+        
+        # Buttons for file management
+        btn_frame = ttk.Frame(parent)
+        btn_frame.pack(fill='x', pady=(0, 10))
+        
+        ttk.Button(btn_frame, text="Add Files...", command=self.tar_add_files).pack(side='left', padx=(0, 5))
+        ttk.Button(btn_frame, text="Add Folder...", command=self.tar_add_folder).pack(side='left', padx=(0, 5))
+        ttk.Button(btn_frame, text="Remove Selected", command=self.tar_remove_selected).pack(side='left', padx=(0, 5))
+        ttk.Button(btn_frame, text="Clear All", command=self.tar_clear_all).pack(side='left', padx=(0, 5))
+        
+        # Output configuration
+        output_group = ttk.LabelFrame(parent, text="Output Configuration", padding="15")
+        output_group.pack(fill='x', pady=(0, 10))
+        
+        ttk.Label(output_group, text="Output File:").grid(row=0, column=0, sticky='w', padx=(0, 10), pady=5)
+        self.tar_output_file = tk.StringVar(value="archive.tar")
+        ttk.Entry(output_group, textvariable=self.tar_output_file, width=60).grid(
+            row=0, column=1, sticky='ew', padx=(0, 10), pady=5)
+        ttk.Button(output_group, text="Browse...", command=self.tar_browse_output).grid(row=0, column=2, pady=5)
+        
+        ttk.Label(output_group, text="Compression:").grid(row=1, column=0, sticky='w', padx=(0, 10), pady=5)
+        compression_frame = ttk.Frame(output_group)
+        compression_frame.grid(row=1, column=1, sticky='w', pady=5)
+        
+        ttk.Radiobutton(compression_frame, text="None (.tar)", 
+                       variable=self.tar_compression, value="none").pack(side='left', padx=(0, 15))
+        ttk.Radiobutton(compression_frame, text="gzip (.tar.gz)", 
+                       variable=self.tar_compression, value="gz").pack(side='left', padx=(0, 15))
+        ttk.Radiobutton(compression_frame, text="bzip2 (.tar.bz2)", 
+                       variable=self.tar_compression, value="bz2").pack(side='left', padx=(0, 15))
+        ttk.Radiobutton(compression_frame, text="xz (.tar.xz)", 
+                       variable=self.tar_compression, value="xz").pack(side='left')
+        
+        output_group.columnconfigure(1, weight=1)
+        
+        # Archive options
+        options_group = ttk.LabelFrame(parent, text="Archive Options", padding="15")
+        options_group.pack(fill='x', pady=(0, 10))
+        
+        self.tar_preserve_paths = tk.BooleanVar(value=False)
+        ttk.Checkbutton(options_group, text="Preserve directory structure", 
+                       variable=self.tar_preserve_paths).pack(anchor='w', pady=2)
+        
+        self.tar_add_timestamp = tk.BooleanVar(value=False)
+        ttk.Checkbutton(options_group, text="Add timestamp to filename", 
+                       variable=self.tar_add_timestamp).pack(anchor='w', pady=2)
+        
+        # Build button
+        control_frame = ttk.Frame(parent)
+        control_frame.pack(pady=(0, 10))
+        
+        ttk.Button(control_frame, text="Create Archive", 
+                  command=self.tar_build, width=20).pack()
+        
+        # Progress section
+        progress_group = ttk.LabelFrame(parent, text="Archive Progress", padding="10")
+        progress_group.pack(fill='x', pady=(0, 10))
+        
+        self.tar_status_label = ttk.Label(progress_group, text="Ready to create archive")
+        self.tar_status_label.pack(anchor='w', pady=(0, 5))
+        
+        self.tar_progress = ttk.Progressbar(progress_group, mode='determinate')
+        self.tar_progress.pack(fill='x', pady=(0, 5))
+        
+        # Log section
+        log_group = ttk.LabelFrame(parent, text="Archive Log", padding="10")
+        log_group.pack(fill='both', expand=True)
+        
+        self.tar_log = scrolledtext.ScrolledText(log_group, height=8, width=90,
+                                                 font=('Courier', 9), state='disabled')
+        self.tar_log.pack(fill='both', expand=True)
+
     # ==================== KZB COMMANDS ====================
     
     def kzb_browse_unpack_input(self):
@@ -1563,6 +1700,7 @@ class CombinedEngineeringTool(tk.Tk):
         if not output_file:
             messagebox.showerror("Error", "Please select an output file")
             return
+
         if not Path(input_dir).exists():
             messagebox.showerror("Error", "Input directory does not exist")
             return
@@ -1706,6 +1844,16 @@ class CombinedEngineeringTool(tk.Tk):
         (outdir / f"{self.vbf_path.name}_ascii_head.txt").write_text(self.vbf_header_text, encoding="utf-8", errors="ignore")
         (outdir / f"{self.vbf_path.name}_config.json").write_text(json.dumps(self.vbf_header_fields, indent=2, ensure_ascii=False), encoding="utf-8")
 
+    def vbf_update_progress_ui(self, current, total, message):
+        """Helper to update VBF unpack progress UI"""
+        self.progress_queue.put((
+            self.vbf_unpack_progress,
+            self.vbf_unpack_status_label,
+            self.vbf_unpack_progress_label,
+            self.vbf_unpack_blocks_label,
+            current, total, message
+        ))
+
     def vbf_cmd_extract_selected(self):
         if not self.vbf_sections:
             return
@@ -1717,33 +1865,81 @@ class CombinedEngineeringTool(tk.Tk):
         sec = next((s for s in self.vbf_sections if s.index == idx), None)
         if not sec:
             return
-        outdir = self._vbf_ensure_outdir()
-        if not outdir:
-            return
-        self._vbf_write_header_sidecars(outdir)
-        out_name = f"{self.vbf_path.name}_section_{sec.index:03d}_{sec.start_addr:08X}_len_{sec.length:06X}.bin"
-        out_path = outdir / out_name
-        with out_path.open('wb') as fh:
-            fh.write(self.vbf_mm[sec.data_off:sec.data_off+sec.length])
-        self.status_label.config(text=f"Status: Extracted block #{sec.index} → {out_path}")
-        messagebox.showinfo("Extracted", str(out_path))
+        
+        # Reset progress
+        self.vbf_unpack_progress['value'] = 0
+        self.vbf_unpack_progress_label.configure(text="0%")
+        self.vbf_unpack_blocks_label.configure(text="0/1")
+        self.vbf_unpack_status_label.configure(text="Extracting selected block...")
+        
+        def run_extract():
+            try:
+                outdir = self._vbf_ensure_outdir()
+                if not outdir:
+                    return
+                self._vbf_write_header_sidecars(outdir)
+                
+                # Update progress to 50%
+                self.vbf_update_progress_ui(1, 2, "Writing block data...")
+                
+                out_name = f"{self.vbf_path.name}_section_{sec.index:03d}_{sec.start_addr:08X}_len_{sec.length:06X}.bin"
+                out_path = outdir / out_name
+                with out_path.open('wb') as fh:
+                    fh.write(self.vbf_mm[sec.data_off:sec.data_off+sec.length])
+                
+                # Complete
+                self.vbf_update_progress_ui(1, 1, "Extraction complete")
+                
+                self.after(0, lambda: self.status_label.config(text=f"Status: Extracted block #{sec.index} → {out_path}"))
+                self.after(0, lambda: messagebox.showinfo("Extracted", str(out_path)))
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror("Extraction Failed", f"Error: {str(e)}"))
+        
+        threading.Thread(target=run_extract, daemon=True).start()
 
     def vbf_cmd_extract_all(self):
         if not self.vbf_sections:
             return
-        outdir = self._vbf_ensure_outdir()
-        if not outdir:
-            return
-        self._vbf_write_header_sidecars(outdir)
-        count = 0
-        for sec in self.vbf_sections:
-            out_name = f"{self.vbf_path.name}_section_{sec.index:03d}_{sec.start_addr:08X}_len_{sec.length:06X}.bin"
-            out_path = outdir / out_name
-            with out_path.open('wb') as fh:
-                fh.write(self.vbf_mm[sec.data_off:sec.data_off+sec.length])
-            count += 1
-        self.status_label.config(text=f"Status: Extracted {count} block(s) → {outdir}")
-        messagebox.showinfo("Done", f"Extracted {count} block(s) to:\n{outdir}")
+        
+        # Reset progress
+        self.vbf_unpack_progress['value'] = 0
+        self.vbf_unpack_progress_label.configure(text="0%")
+        self.vbf_unpack_blocks_label.configure(text="0/0")
+        self.vbf_unpack_status_label.configure(text="Initializing extraction...")
+        
+        def run_extract_all():
+            try:
+                outdir = self._vbf_ensure_outdir()
+                if not outdir:
+                    return
+                
+                total = len(self.vbf_sections)
+                self.vbf_update_progress_ui(0, total, "Writing header files...")
+                self._vbf_write_header_sidecars(outdir)
+                
+                count = 0
+                for sec in self.vbf_sections:
+                    if count % 5 == 0:  # Update every 5 blocks
+                        self.vbf_update_progress_ui(
+                            count, total, 
+                            f"Extracting block {sec.index}/{total}..."
+                        )
+                    
+                    out_name = f"{self.vbf_path.name}_section_{sec.index:03d}_{sec.start_addr:08X}_len_{sec.length:06X}.bin"
+                    out_path = outdir / out_name
+                    with out_path.open('wb') as fh:
+                        fh.write(self.vbf_mm[sec.data_off:sec.data_off+sec.length])
+                    count += 1
+                
+                # Complete
+                self.vbf_update_progress_ui(total, total, "Extraction complete")
+                
+                self.after(0, lambda: self.status_label.config(text=f"Status: Extracted {count} block(s) → {outdir}"))
+                self.after(0, lambda: messagebox.showinfo("Done", f"Extracted {count} block(s) to:\n{outdir}"))
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror("Extraction Failed", f"Error: {str(e)}"))
+        
+        threading.Thread(target=run_extract_all, daemon=True).start()
 
     def vbf_pk_load_header(self):
         p = filedialog.askopenfilename(title="Load Header Text",
@@ -2206,6 +2402,206 @@ class CombinedEngineeringTool(tk.Tk):
         
         threading.Thread(target=run_build, daemon=True).start()
 
+    # ==================== TAR ARCHIVE BUILDER COMMANDS ====================
+    
+    def tar_add_files(self):
+        files = filedialog.askopenfilenames(
+            title="Select Binary Files",
+            filetypes=[("Binary files", "*.bin"), ("All files", "*.*")]
+        )
+        if not files:
+            return
+        
+        for filepath in files:
+            path = Path(filepath)
+            if path not in self.tar_files:
+                self.tar_files.append(path)
+        
+        self._tar_refresh_tree()
+    
+    def tar_add_folder(self):
+        folder = filedialog.askdirectory(title="Select Folder")
+        if not folder:
+            return
+        
+        folder_path = Path(folder)
+        for file_path in folder_path.rglob('*'):
+            if file_path.is_file() and file_path not in self.tar_files:
+                self.tar_files.append(file_path)
+        
+        self._tar_refresh_tree()
+    
+    def tar_remove_selected(self):
+        sel = self.tar_tree.selection()
+        if not sel:
+            return
+        idx = int(sel[0]) - 1
+        if 0 <= idx < len(self.tar_files):
+            del self.tar_files[idx]
+            self._tar_refresh_tree()
+    
+    def tar_clear_all(self):
+        self.tar_files.clear()
+        self._tar_refresh_tree()
+    
+    def _tar_refresh_tree(self):
+        for iid in self.tar_tree.get_children():
+            self.tar_tree.delete(iid)
+        
+        for i, path in enumerate(self.tar_files, start=1):
+            size = path.stat().st_size
+            self.tar_tree.insert("", "end", iid=str(i), values=(
+                i, path.name, f"{size:,} bytes", str(path)
+            ))
+    
+    def tar_browse_output(self):
+        compression = self.tar_compression.get()
+        ext_map = {
+            "none": ".tar",
+            "gz": ".tar.gz",
+            "bz2": ".tar.bz2",
+            "xz": ".tar.xz"
+        }
+        default_ext = ext_map.get(compression, ".tar")
+        
+        filename = filedialog.asksaveasfilename(
+            title="Save TAR Archive As",
+            defaultextension=default_ext,
+            initialfile=f"archive{default_ext}",
+            filetypes=[
+                ("TAR archives", "*.tar"),
+                ("GZIP compressed TAR", "*.tar.gz"),
+                ("BZIP2 compressed TAR", "*.tar.bz2"),
+                ("XZ compressed TAR", "*.tar.xz"),
+                ("All files", "*.*")
+            ]
+        )
+        if filename:
+            self.tar_output_file.set(filename)
+    
+    def tar_log_message(self, message):
+        self.tar_log.configure(state='normal')
+        self.tar_log.insert(tk.END, message + '\n')
+        self.tar_log.see(tk.END)
+        self.tar_log.configure(state='disabled')
+    
+    def tar_build(self):
+        if not self.tar_files:
+            messagebox.showerror("No Files", "Please add files to archive")
+            return
+        
+        output_path = self.tar_output_file.get()
+        if not output_path:
+            messagebox.showerror("No Output", "Please specify output file")
+            return
+        
+        # Clear log
+        self.tar_log.configure(state='normal')
+        self.tar_log.delete(1.0, tk.END)
+        self.tar_log.configure(state='disabled')
+        self.tar_progress['value'] = 0
+        self.tar_status_label.configure(text="Creating archive...")
+        
+        def run_tar_build():
+            try:
+                self.tar_log_message("=" * 70)
+                self.tar_log_message("Starting TAR archive creation")
+                self.tar_log_message("=" * 70)
+                
+                compression = self.tar_compression.get()
+                mode_map = {
+                    "none": "w",
+                    "gz": "w:gz",
+                    "bz2": "w:bz2",
+                    "xz": "w:xz"
+                }
+                mode = mode_map.get(compression, "w")
+                
+                comp_name = {
+                    "none": "No compression",
+                    "gz": "GZIP compression",
+                    "bz2": "BZIP2 compression",
+                    "xz": "XZ compression"
+                }.get(compression, "No compression")
+                
+                self.tar_log_message(f"Compression: {comp_name}")
+                self.tar_log_message(f"Output: {output_path}")
+                self.tar_log_message(f"Files to archive: {len(self.tar_files)}")
+                self.tar_log_message("")
+                
+                # Add timestamp if requested
+                output_final = Path(output_path)
+                if self.tar_add_timestamp.get():
+                    from datetime import datetime
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    stem = output_final.stem
+                    # Remove existing tar extensions
+                    if stem.endswith('.tar'):
+                        stem = stem[:-4]
+                    suffix = ''.join(output_final.suffixes)
+                    output_final = output_final.parent / f"{stem}_{timestamp}{suffix}"
+                    self.tar_log_message(f"Added timestamp to filename: {output_final.name}")
+                    self.tar_log_message("")
+                
+                with tarfile.open(output_final, mode) as tar:
+                    total = len(self.tar_files)
+                    for i, file_path in enumerate(self.tar_files, start=1):
+                        # Update progress
+                        progress = int((i / total) * 100)
+                        self.tar_progress['value'] = progress
+                        self.tar_status_label.configure(text=f"Adding: {file_path.name}")
+                        
+                        # Determine arcname
+                        if self.tar_preserve_paths.get():
+                            arcname = str(file_path)
+                        else:
+                            arcname = file_path.name
+                        
+                        # Add file to archive
+                        tar.add(file_path, arcname=arcname)
+                        
+                        size = file_path.stat().st_size
+                        self.tar_log_message(f"[{i}/{total}] Added: {arcname} ({size:,} bytes)")
+                
+                final_size = output_final.stat().st_size
+                
+                self.tar_progress['value'] = 100
+                self.tar_status_label.configure(text="Archive created successfully!")
+                
+                self.tar_log_message("")
+                self.tar_log_message("=" * 70)
+                self.tar_log_message("[SUCCESS] TAR archive created successfully")
+                self.tar_log_message(f"[OUTPUT] {output_final}")
+                self.tar_log_message(f"[SIZE  ] {final_size:,} bytes ({final_size/1024:.2f} KB)")
+                self.tar_log_message(f"[FILES ] {len(self.tar_files)} files archived")
+                self.tar_log_message("=" * 70)
+                
+                self.after(0, lambda: messagebox.showinfo(
+                    "Archive Complete",
+                    f"TAR archive created successfully!\n\n"
+                    f"Output: {output_final}\n"
+                    f"Size: {final_size:,} bytes ({final_size/1024:.2f} KB)\n"
+                    f"Files: {len(self.tar_files)}"
+                ))
+                
+            except Exception as e:
+                import traceback
+                tb = traceback.format_exc()
+                self.tar_log_message("")
+                self.tar_log_message("=" * 70)
+                self.tar_log_message(f"[ERROR] Archive creation failed: {str(e)}")
+                self.tar_log_message("=" * 70)
+                self.tar_log_message(tb)
+                self.tar_progress['value'] = 0
+                self.tar_status_label.configure(text="Archive creation failed")
+                
+                self.after(0, lambda: messagebox.showerror(
+                    "Archive Failed",
+                    f"Error creating TAR archive:\n\n{str(e)}"
+                ))
+        
+        threading.Thread(target=run_tar_build, daemon=True).start()
+
     # ==================== UI UPDATE MACHINERY ====================
     
     def _tick_ui(self):
@@ -2262,9 +2658,11 @@ class CombinedEngineeringTool(tk.Tk):
     def cmd_about(self):
         messagebox.showinfo(
             "About",
-            "Combined Engineering Tool - KZB & VBF Tools v3.0\n\n"
+            "Ford Firmware Engineering Tool v3.2\n\n"
+            "VBF Tools: VBF unpacker/packer with Python LZSS\n"
             "KZB Tools: Archive extraction and packing\n"
-            "VBF Tools: VBF unpacker/packer with Python LZSS\n\n"
+            "TAR Archive Builder: Create TAR archives\n\n"
+            "Bitmaps Builder: Custom binary file builder\n"
             "By Jakka351\n"
             "github.com/jakka351"
         )
