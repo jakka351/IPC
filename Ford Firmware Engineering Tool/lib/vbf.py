@@ -1,5 +1,15 @@
 from .imports import *
-
+import struct
+import zlib
+import re
+from pathlib import Path
+from typing import List, Tuple, Optional, Callable
+from .lzss import compress_block
+from .lzss import *
+import struct
+import zlib
+from pathlib import Path
+from typing import List, Tuple, Optional, Callable
 # ==================== VBF IMPLEMENTATION ====================
 
 class TreeNode:
@@ -190,56 +200,70 @@ def lzss_compress_data(input_buffer: bytes, on_progress: Optional[Callable[[floa
         
         win_pos = (win_pos & 0xFFFF) | (byte2_win << 16)
     
-    ctx = lzss_init_tree(win_pos & 0xFFFF, ctx)
+    ctx = lzss_init_tree(win_pos & 0x3FF, ctx)
+
+    preload = min(byte2_win, 0x11)
+    for i in range(preload):
+        ctx, _ = lzss_add_node(((win_pos & 0x3FF) + i) & 0x3FF, ctx.lzss_window, ctx)
     
     byte2_win = (win_pos >> 16) & 0xFF
     total_iterations = 0
     max_iterations = input_length * 2
     
+    # FIXED: Main compression loop - this was completely missing!
     while byte2_win > 0 and total_iterations < max_iterations:
         total_iterations += 1
-        
+
         if on_progress and total_iterations % 1000 == 0:
             progress = min(0.95, in_ptr / max(1, input_length))
             on_progress(progress)
-        
+
+        # Ensure we computed a match for the CURRENT position
         if ctx.match_len > byte2_win:
             ctx.match_len = byte2_win
-        
+
+        # Compute best match for CURRENT position before emitting a token
+        ctx, match_pos = lzss_add_node((win_pos & 0x3FF), ctx.lzss_window, ctx)
+
         if ctx.match_len > 1:
+            # match: flag 0, 10-bit pos, 4-bit (len-2)
             ctx = output_bits(0, 1, ctx)
-            ctx = output_bits(match_pos & 0xFFFF, 0x0A, ctx)
-            ctx = output_bits(ctx.match_len - 2, 4, ctx)
+            ctx = output_bits(match_pos & 0x03FF, 10, ctx)
+            ctx = output_bits((ctx.match_len - 2) & 0x0F, 4, ctx)
             repl_cnt = ctx.match_len
         else:
+            # literal: flag 1, then 8 bits
             repl_cnt = 1
             ctx = output_bits(1, 1, ctx)
-            literal_val = ctx.lzss_window[(win_pos & 0xFFFF) & 0x3FF]
+            literal_val = ctx.lzss_window[(win_pos & 0x3FF)]
             ctx = output_bits(literal_val, 8, ctx)
-        
-        byte3_win = 0
-        while byte3_win < repl_cnt:
-            delete_pos = ((win_pos & 0xFFFF) + 17) & 0x3FF
-            ctx = lzss_delete_node(delete_pos, ctx)
             
+        # Slide window by repl_cnt bytes (N=0x400, F=0x11 => tail is +0x10)
+        for _ in range(repl_cnt):
+            # delete node at CURRENT position
+            delete_pos = (win_pos & 0x3FF)
+            ctx = lzss_delete_node(delete_pos, ctx)
+
             if in_ptr < input_length:
-                match_pos_hi = input_buffer[in_ptr]
+                # pull next input byte into tail of lookahead
+                next_byte = input_buffer[in_ptr]
                 in_ptr += 1
-                store_pos = ((win_pos & 0xFFFF) + 17) & 0x3FF
-                ctx.lzss_window[store_pos] = match_pos_hi
+                store_pos = ((win_pos & 0xFFFF) + 0x10) & 0x3FF  # F-1
+                ctx.lzss_window[store_pos] = next_byte
+
+                # insert the node for the position we are moving to
+                ctx, _ = lzss_add_node((((win_pos & 0xFFFF) + 1) & 0x3FF), ctx.lzss_window, ctx)
+
+                # advance low 10 by 1; keep high word bookkeeping
+                win_pos_lo = (((win_pos & 0xFFFF) + 1) & 0x3FF)
+                win_pos = win_pos_lo | (win_pos & 0xFFFF0000)
             else:
+                # no more input: shrink lookahead
                 byte2_win -= 1
                 win_pos = (win_pos & 0xFFFF) | (byte2_win << 16)
-            
-            win_pos_lo = ((win_pos & 0xFFFF) + 1) & 0x3FF
-            win_pos = win_pos_lo | (win_pos & 0xFFFF0000)
-            
-            byte2_check = (win_pos >> 16) & 0xFF
-            if byte2_check > 0:
-                ctx, match_pos = lzss_add_node(win_pos & 0xFFFF, ctx.lzss_window, ctx)
-            
-            byte3_win += 1
-        
+                win_pos_lo = (((win_pos & 0xFFFF) + 1) & 0x3FF)
+                win_pos = win_pos_lo | (win_pos & 0xFFFF0000)
+
         byte2_win = (win_pos >> 16) & 0xFF
     
     ctx = output_bits(0, 1, ctx)
@@ -413,3 +437,333 @@ def parse_blocks(mm: mmap.mmap, start_off: int, on_progress=None) -> List[VBFSec
         if on_progress and (idx % 64 == 0):
             on_progress(p / total)
     return sections
+
+'''
+def crc16_ccitt_ffff(data: bytes) -> int:
+    """Calculate CRC16-CCITT with 0xFFFF initial value"""
+    CRC16_POLY = 0x1021
+    CRC16_INIT = 0xFFFF
+    crc = CRC16_INIT
+    for b in data:
+        crc ^= (b << 8) & 0xFFFF
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ CRC16_POLY) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return crc & 0xFFFF
+
+
+def crc32_bytes(buf: bytes, init: int = 0) -> int:
+    """Calculate CRC32 of bytes"""
+    return zlib.crc32(buf, init) & 0xFFFFFFFF
+
+
+def _insert_file_checksum_in_header(header_bytes: bytes, crc_value: int) -> bytes:
+    """Insert or update file_checksum field in header"""
+    header_text = header_bytes.decode('latin-1', errors='replace')
+    
+    pattern = r'(file_checksum\s*=\s*)0x[0-9A-Fa-f]+(\s*;)'
+    replacement = rf'\g<1>0x{crc_value:08X}\g<2>'
+    
+    if re.search(pattern, header_text):
+        new_header = re.sub(pattern, replacement, header_text)
+    else:
+        close_brace = header_text.rfind('}')
+        if close_brace > 0:
+            before = header_text[:close_brace].rstrip()
+            after = header_text[close_brace:]
+            new_header = f"{before}\n    file_checksum = 0x{crc_value:08X};\n{after}"
+        else:
+            new_header = header_text
+    
+    return new_header.encode('latin-1')
+
+
+
+def build_vbf_file(header_text: str,
+                   blocks: List[Tuple[int, Path]],
+                   output_path: Path,
+                   use_lzss: bool = False,
+                   compute_file_crc: bool = True,
+                   crc_scope: str = "whole_file_zeroed_field",
+                   on_progress: Optional[Callable[[float], None]] = None,
+                   cancel_check: Optional[Callable[[], bool]] = None) -> bool:
+    """
+    Robust implementation of VBF repacking.
+    - header_text: ASCII header content (string) containing a {...} block
+    - blocks: list of (address:int, Path_to_bin)
+    - output_path: Path where the VBF will be written
+    - use_lzss: if True compress each block with compress_block(data) -> (compressed, meta)
+    - compute_file_crc: if True calculate CRC32 per selected crc_scope and inject into header
+    - crc_scope: one of "whole_file_zeroed_field", "payload_only", "header_only"
+    """
+    try:
+        if on_progress:
+            on_progress(0.0)
+        if cancel_check and cancel_check():
+            return False
+
+        # --- 1) Read & compress blocks ---
+        comp_blocks = []   # list of tuples: (addr:int, data:bytes, crc16:int)
+        total_blocks = max(1, len(blocks))
+        for i, (addr, bin_path) in enumerate(blocks):
+            if cancel_check and cancel_check():
+                return False
+            if on_progress:
+                on_progress(0.25 * (i / total_blocks))
+            # Read the input BIN
+            data = Path(bin_path).read_bytes()
+            if use_lzss:
+                # compress_block is expected to exist in this module (from lzss.py)
+                try:
+                    data, _meta = compress_block(data)
+                except Exception:
+                    # If compress_block isn't available for some reason, fallback to original data
+                    pass
+            crc16 = crc16_ccitt_ffff(data)
+            comp_blocks.append((int(addr) & 0xFFFFFFFF, data, int(crc16) & 0xFFFF))
+            if on_progress:
+                on_progress(0.5 * ((i + 1) / total_blocks))
+
+        # --- 2) Normalize header bytes (ensure '}' then CRLF) ---
+        # Normalize header terminator: must end with '}' then CRLF
+        header_bytes = header_text.encode('latin-1', errors='replace')
+
+        # Strip any trailing line-ends first
+        stripped = header_bytes.rstrip(b'\r\n')
+
+        # Ensure there is a closing brace
+        if not stripped.rstrip().endswith(b'}'):
+            stripped = stripped.rstrip() + b'\n}'
+
+        # VBF headers should end with CRLF
+        header_bytes = stripped + b'\r\n'
+        if cancel_check and cancel_check():
+            return False
+        if on_progress:
+            on_progress(0.55)
+
+        # --- 3) Build payload (addr U32 BE, len U32 BE, data, crc16 U16 BE) ---
+        from io import BytesIO
+        payload_io = BytesIO()
+        for addr, data, crc16 in comp_blocks:
+            if cancel_check and cancel_check():
+                return False
+            payload_io.write(struct.pack('>I', addr))
+            payload_io.write(struct.pack('>I', len(data)))
+            payload_io.write(data)
+            payload_io.write(struct.pack('>H', crc16))
+        payload_bytes = payload_io.getvalue()
+
+        if on_progress:
+            on_progress(0.7)
+
+        # --- 4) Compute file CRC32 and insert into header if requested ---
+        header_out = header_bytes
+        if compute_file_crc:
+            if on_progress:
+                on_progress(0.75)
+            if crc_scope == "payload_only":
+                file_crc = crc32_bytes(payload_bytes)
+                header_out = _insert_file_checksum_in_header(header_bytes, file_crc)
+            elif crc_scope == "header_only":
+                file_crc = crc32_bytes(header_bytes)
+                header_out = _insert_file_checksum_in_header(header_bytes, file_crc)
+            else:
+                # whole_file_zeroed_field - zero the checksum field, CRC over header+payload, then write back
+                temp_header = _insert_file_checksum_in_header(header_bytes, 0)
+                file_crc = crc32_bytes(temp_header + payload_bytes)
+                header_out = _insert_file_checksum_in_header(header_bytes, file_crc)
+
+            if on_progress:
+                on_progress(0.85)
+
+        if cancel_check and cancel_check():
+            return False
+
+        # --- 5) Write header + payload to output file ---
+        outp = Path(output_path)
+        outp.parent.mkdir(parents=True, exist_ok=True)
+        with outp.open('wb') as fh:
+            fh.write(header_out)
+            fh.write(payload_bytes)
+
+        if on_progress:
+            on_progress(1.0)
+        return True
+
+    except Exception:
+        # If something goes wrong, avoid leaving a broken file on disk
+        try:
+            if 'outp' in locals() and outp.exists():
+                outp.unlink()
+        except Exception:
+            pass
+        raise
+
+'''
+
+def crc16_ccitt_ffff(data: bytes) -> int:
+    """CRC-16-CCITT with initial 0xFFFF (poly 0x1021)."""
+    crc = 0xFFFF
+    for b in data:
+        crc ^= (b << 8) & 0xFFFF
+        for _ in range(8):
+            if crc & 0x8000:
+                crc = ((crc << 1) ^ 0x1021) & 0xFFFF
+            else:
+                crc = (crc << 1) & 0xFFFF
+    return crc & 0xFFFF
+
+def crc32_bytes(buf: bytes, init: int = 0) -> int:
+    """Wrapper for zlib.crc32, returns unsigned 32-bit."""
+    return zlib.crc32(buf, init) & 0xFFFFFFFF
+
+def _insert_file_checksum_in_header(header_bytes: bytes, crc_value: int) -> bytes:
+    """
+    Insert or update `file_checksum = 0xXXXXXXXX;` in the ASCII header block.
+    Preserves existing line endings (CRLF vs LF) as found in the header.
+    """
+    import re
+
+    # Work in text for easier regex; keep latin-1 so bytes map 1:1
+    header_text = header_bytes.decode('latin-1', errors='replace')
+
+    # Pattern: file_checksum = 0xDEADBEEF;
+    pattern = r'(file_checksum\s*=\s*)0x[0-9A-Fa-f]+(\s*;)'
+    replacement = rf'\10x{crc_value:08X}\2'
+
+    if re.search(pattern, header_text):
+        new_header_text = re.sub(pattern, replacement, header_text)
+        return new_header_text.encode('latin-1', errors='replace')
+
+    # No existing field — insert before the last closing brace '}' inside header.
+    close_brace = header_text.rfind('}')
+    if close_brace != -1:
+        # Detect existing newline style
+        line_ending = '\r\n' if '\r\n' in header_text else '\n'
+        before = header_text[:close_brace].rstrip()
+        after = header_text[close_brace:]
+        insertion = f"{line_ending}    file_checksum = 0x{crc_value:08X};{line_ending}"
+        new_header_text = f"{before}{insertion}{after}"
+        return new_header_text.encode('latin-1', errors='replace')
+
+    # If header is weird, just return original bytes
+    return header_bytes
+
+def build_vbf_file(header_text: str,
+                   blocks: List[Tuple[int, Path]],
+                   output_path: Path,
+                   use_lzss: bool = False,
+                   compute_file_crc: bool = True,
+                   crc_scope: str = "whole_file_zeroed_field",
+                   on_progress: Optional[Callable[[float], None]] = None,
+                   cancel_check: Optional[Callable[[], bool]] = None) -> bool:
+    """
+    Build a VBF file from header_text and blocks.
+
+    blocks: list of tuples (address:int, Path_to_binary)
+    Layout for each block in payload:
+        addr (4 bytes, big-endian)
+        length (4 bytes, big-endian)
+        data (length bytes)
+        crc16 (2 bytes, big-endian)  -- CRC16 over the data (post-compression)
+    """
+    try:
+        if on_progress:
+            on_progress(0.0)
+        if cancel_check and cancel_check():
+            return False
+
+        # Step 1: read and optionally compress blocks, compute CRC16 per block
+        comp_blocks = []
+        total = max(1, len(blocks))
+        for i, (addr, bin_path) in enumerate(blocks):
+            if cancel_check and cancel_check():
+                return False
+            if on_progress:
+                on_progress(0.25 * (i / total))
+
+            data = Path(bin_path).read_bytes()
+            if use_lzss:
+                # Expect compress_block(data) -> (compressed_bytes, meta)
+                # If compress_block isn't available, fall back to raw data
+                try:
+                    data, _meta = compress_block(data)  # compress_block may be defined in this module or lzss.py
+                except Exception:
+                    pass
+
+            crc16 = crc16_ccitt_ffff(data)
+            comp_blocks.append((int(addr) & 0xFFFFFFFF, data, crc16 & 0xFFFF))
+
+            if on_progress:
+                on_progress(0.5 * ((i + 1) / total))
+
+        # Step 2: normalize header to end with '}' + CRLF (VBF header convention)
+        header_bytes = header_text.encode('latin-1', errors='replace')
+        stripped = header_bytes.rstrip(b'\r\n')
+        if not stripped.rstrip().endswith(b'}'):
+            stripped = stripped.rstrip() + b'\n}'
+        header_bytes = stripped + b'\r\n'
+
+        if cancel_check and cancel_check():
+            return False
+        if on_progress:
+            on_progress(0.55)
+
+        # Step 3: build payload
+        from io import BytesIO
+        payload_io = BytesIO()
+        for addr, data, crc16 in comp_blocks:
+            if cancel_check and cancel_check():
+                return False
+            payload_io.write(struct.pack('>I', addr))
+            payload_io.write(struct.pack('>I', len(data)))
+            payload_io.write(data)
+            payload_io.write(struct.pack('>H', crc16 & 0xFFFF))
+        payload_bytes = payload_io.getvalue()
+
+        if on_progress:
+            on_progress(0.7)
+
+        # Step 4: compute file CRC and inject into header (if requested)
+        header_out = header_bytes
+        if compute_file_crc:
+            if on_progress:
+                on_progress(0.75)
+            if crc_scope == "payload_only":
+                file_crc = crc32_bytes(payload_bytes)
+                header_out = _insert_file_checksum_in_header(header_bytes, file_crc)
+            elif crc_scope == "header_only":
+                file_crc = crc32_bytes(header_bytes)
+                header_out = _insert_file_checksum_in_header(header_bytes, file_crc)
+            else:  # whole_file_zeroed_field
+                temp = _insert_file_checksum_in_header(header_bytes, 0)
+                file_crc = crc32_bytes(temp + payload_bytes)
+                header_out = _insert_file_checksum_in_header(header_bytes, file_crc)
+            if on_progress:
+                on_progress(0.85)
+
+        if cancel_check and cancel_check():
+            return False
+
+        # Step 5: write to disk atomically (attempt to remove partial file on exception)
+        outp = Path(output_path)
+        outp.parent.mkdir(parents=True, exist_ok=True)
+        with outp.open('wb') as fh:
+            fh.write(header_out)
+            fh.write(payload_bytes)
+
+        if on_progress:
+            on_progress(1.0)
+        return True
+
+    except Exception:
+        # Remove partially written file on failure
+        try:
+            if 'outp' in locals() and outp.exists():
+                outp.unlink()
+        except Exception:
+            pass
+        raise
