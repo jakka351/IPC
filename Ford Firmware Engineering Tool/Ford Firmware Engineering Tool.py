@@ -91,8 +91,9 @@ from lib.imports import *
 from lib.interface import *
 from lib.vbf import *
 from lib.kzb import *
-from lib.commands import *
 from lib.spritesheet_logo_apply import *
+from lib.lzss import *
+from lib.j2534 import *
 # ==================== MAIN ====================
 
 def main():
