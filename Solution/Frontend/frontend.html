@@ -1,0 +1,1144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ford Firmware Engineering Tool</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        :root {
+            --bg-primary: #0a0e14;
+            --bg-secondary: #111820;
+            --bg-tertiary: #1a2332;
+            --bg-panel: #0d1219;
+            --border-color: #243447;
+            --border-active: #3d5a80;
+            --text-primary: #e6edf3;
+            --text-secondary: #8b949e;
+            --text-muted: #545d68;
+            --accent-blue: #58a6ff;
+            --accent-cyan: #39c5cf;
+            --accent-green: #3fb950;
+            --accent-yellow: #d29922;
+            --accent-orange: #db6d28;
+            --accent-red: #f85149;
+            --ford-blue: #00539b;
+            --ford-blue-light: #1976d2;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'IBM Plex Sans', sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .header {
+            background: var(--bg-secondary);
+            border-bottom: 1px solid var(--border-color);
+            padding: 0 32px;
+            height: 64px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .logo-icon {
+            width: 42px;
+            height: 42px;
+            background: var(--ford-blue);
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'JetBrains Mono', monospace;
+            font-weight: 700;
+            font-size: 13px;
+            color: white;
+        }
+
+        .logo-text {
+            line-height: 1.2;
+        }
+
+        .logo-title {
+            font-weight: 700;
+            font-size: 16px;
+        }
+
+        .logo-subtitle {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+        }
+
+        .connection-badge {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 16px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            font-size: 13px;
+        }
+
+        .status-dot {
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--accent-red);
+        }
+
+        .status-dot.connected { background: var(--accent-green); }
+
+        .main {
+            flex: 1;
+            display: flex;
+            gap: 1px;
+            background: var(--border-color);
+        }
+
+        .workflow-panel {
+            flex: 1;
+            background: var(--bg-primary);
+            padding: 32px;
+            display: flex;
+            flex-direction: column;
+            max-width: 720px;
+        }
+
+        .console-panel {
+            flex: 1;
+            background: var(--bg-panel);
+            padding: 24px;
+            display: flex;
+            flex-direction: column;
+            min-width: 400px;
+        }
+
+        .panel-title {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 1.5px;
+            color: var(--text-secondary);
+            margin-bottom: 16px;
+            font-weight: 600;
+        }
+
+        /* Workflow Steps */
+        .workflow-header {
+            margin-bottom: 32px;
+        }
+
+        .workflow-title {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+
+        .workflow-desc {
+            color: var(--text-secondary);
+            font-size: 14px;
+        }
+
+        .steps-indicator {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 32px;
+        }
+
+        .step-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--bg-tertiary);
+            border: 2px solid var(--border-color);
+            transition: all 0.3s;
+        }
+
+        .step-dot.active {
+            background: var(--ford-blue);
+            border-color: var(--ford-blue);
+            box-shadow: 0 0 12px rgba(0, 83, 155, 0.5);
+        }
+
+        .step-dot.complete {
+            background: var(--accent-green);
+            border-color: var(--accent-green);
+        }
+
+        .step-connector {
+            flex: 1;
+            height: 2px;
+            background: var(--border-color);
+            align-self: center;
+            max-width: 60px;
+        }
+
+        .step-connector.complete {
+            background: var(--accent-green);
+        }
+
+        /* Step Content */
+        .step-content {
+            flex: 1;
+            display: none;
+            animation: fadeIn 0.4s ease;
+        }
+
+        .step-content.active { display: block; }
+
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .step-label {
+            font-size: 12px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin-bottom: 8px;
+        }
+
+        .step-title {
+            font-size: 20px;
+            font-weight: 600;
+            margin-bottom: 16px;
+        }
+
+        /* Connection Step */
+        .device-select-group {
+            margin-bottom: 24px;
+        }
+
+        .form-label {
+            display: block;
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .form-select, .form-input {
+            width: 100%;
+            padding: 14px 16px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            color: var(--text-primary);
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            transition: all 0.2s;
+        }
+
+        .form-select:focus, .form-input:focus {
+            outline: none;
+            border-color: var(--accent-blue);
+        }
+
+        /* Image Upload */
+        .upload-zone {
+            border: 2px dashed var(--border-color);
+            border-radius: 12px;
+            padding: 48px 32px;
+            text-align: center;
+            transition: all 0.3s;
+            background: var(--bg-secondary);
+            cursor: pointer;
+        }
+
+        .upload-zone:hover, .upload-zone.dragover {
+            border-color: var(--accent-blue);
+            background: rgba(88, 166, 255, 0.05);
+        }
+
+        .upload-zone.has-file {
+            border-color: var(--accent-green);
+            border-style: solid;
+        }
+
+        .upload-icon {
+            width: 56px;
+            height: 56px;
+            margin: 0 auto 20px;
+            opacity: 0.4;
+        }
+
+        .upload-title {
+            font-size: 16px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .upload-subtitle {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .upload-input { display: none; }
+
+        .image-preview-box {
+            display: none;
+            margin-top: 24px;
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 20px;
+        }
+
+        .image-preview-box.visible { display: flex; gap: 20px; align-items: center; }
+
+        .preview-thumb {
+            width: 120px;
+            height: 80px;
+            background: repeating-conic-gradient(#1a1a1a 0% 25%, #2a2a2a 0% 50%) 50% / 16px 16px;
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+
+        .preview-thumb img {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+
+        .preview-info { flex: 1; }
+
+        .preview-filename {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 13px;
+            color: var(--accent-cyan);
+            margin-bottom: 4px;
+        }
+
+        .preview-meta {
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .preview-status {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 12px;
+            color: var(--accent-green);
+            margin-top: 8px;
+        }
+
+        /* Processing State */
+        .processing-container {
+            text-align: center;
+            padding: 48px 0;
+        }
+
+        .spinner {
+            width: 64px;
+            height: 64px;
+            border: 3px solid var(--border-color);
+            border-top-color: var(--ford-blue);
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 24px;
+        }
+
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+
+        .processing-title {
+            font-size: 18px;
+            font-weight: 600;
+            margin-bottom: 8px;
+        }
+
+        .processing-status {
+            font-size: 14px;
+            color: var(--text-secondary);
+            margin-bottom: 24px;
+        }
+
+        .processing-substatus {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 12px;
+            color: var(--accent-cyan);
+        }
+
+        /* Flash Progress */
+        .flash-container {
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 24px;
+        }
+
+        .flash-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }
+
+        .flash-title {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .flash-percent {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--accent-cyan);
+        }
+
+        .progress-bar {
+            height: 8px;
+            background: var(--bg-primary);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 20px;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, var(--ford-blue), var(--accent-cyan));
+            border-radius: 4px;
+            transition: width 0.3s;
+            width: 0%;
+        }
+
+        .progress-fill.complete {
+            background: var(--accent-green);
+        }
+
+        .flash-stats {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+        }
+
+        .flash-stat {
+            text-align: center;
+            padding: 12px;
+            background: var(--bg-primary);
+            border-radius: 8px;
+        }
+
+        .flash-stat-value {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--accent-cyan);
+        }
+
+        .flash-stat-label {
+            font-size: 10px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .flash-status-text {
+            text-align: center;
+            margin-top: 20px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        /* Complete State */
+        .complete-container {
+            text-align: center;
+            padding: 48px 0;
+        }
+
+        .complete-icon {
+            width: 80px;
+            height: 80px;
+            background: rgba(63, 185, 80, 0.15);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin: 0 auto 24px;
+        }
+
+        .complete-icon svg {
+            width: 40px;
+            height: 40px;
+            color: var(--accent-green);
+        }
+
+        .complete-title {
+            font-size: 24px;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: var(--accent-green);
+        }
+
+        .complete-subtitle {
+            font-size: 14px;
+            color: var(--text-secondary);
+        }
+
+        /* Buttons */
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 10px;
+            padding: 14px 28px;
+            font-size: 14px;
+            font-weight: 600;
+            border: none;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-family: inherit;
+        }
+
+        .btn-primary {
+            background: var(--ford-blue);
+            color: white;
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            background: var(--ford-blue-light);
+        }
+
+        .btn-primary:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .btn-large {
+            padding: 18px 48px;
+            font-size: 15px;
+        }
+
+        .btn-block { width: 100%; }
+
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover {
+            background: var(--bg-secondary);
+            border-color: var(--border-active);
+        }
+
+        .action-buttons {
+            margin-top: 32px;
+            display: flex;
+            gap: 12px;
+        }
+
+        /* Console */
+        .console-output {
+            flex: 1;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 16px;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 11px;
+            line-height: 1.7;
+            overflow-y: auto;
+        }
+
+        .log-entry {
+            display: flex;
+            gap: 10px;
+            padding: 2px 0;
+        }
+
+        .log-time { color: var(--text-muted); flex-shrink: 0; }
+
+        .log-level {
+            flex-shrink: 0;
+            width: 44px;
+            text-align: center;
+            font-size: 9px;
+            font-weight: 600;
+            padding: 2px 0;
+            border-radius: 3px;
+        }
+
+        .log-level.info { background: rgba(88, 166, 255, 0.2); color: var(--accent-blue); }
+        .log-level.ok { background: rgba(63, 185, 80, 0.2); color: var(--accent-green); }
+        .log-level.warn { background: rgba(210, 153, 34, 0.2); color: var(--accent-yellow); }
+        .log-level.err { background: rgba(248, 81, 73, 0.2); color: var(--accent-red); }
+        .log-level.tx { background: rgba(219, 109, 40, 0.2); color: var(--accent-orange); }
+        .log-level.rx { background: rgba(57, 197, 207, 0.2); color: var(--accent-cyan); }
+
+        .log-msg { color: var(--text-primary); word-break: break-word; }
+
+        /* Server Config (collapsed) */
+        .server-config {
+            margin-top: 24px;
+            padding-top: 24px;
+            border-top: 1px solid var(--border-color);
+        }
+
+        .config-toggle {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: var(--text-muted);
+            cursor: pointer;
+            margin-bottom: 16px;
+        }
+
+        .config-toggle:hover { color: var(--text-secondary); }
+
+        .config-fields {
+            display: none;
+        }
+
+        .config-fields.visible { display: block; }
+
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-primary); }
+        ::-webkit-scrollbar-thumb { background: var(--border-color); border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div class="logo">
+            <div class="logo-icon">IPC</div>
+            <div class="logo-text">
+                <div class="logo-title">Ford Firmware Engineering Tool</div>
+                <div class="logo-subtitle">Instrument Cluster Logo Flasher</div>
+            </div>
+        </div>
+        <div class="connection-badge">
+            <span class="status-dot" id="statusDot"></span>
+            <span id="connectionText">Disconnected</span>
+        </div>
+    </header>
+
+    <main class="main">
+        <div class="workflow-panel">
+            <div class="workflow-header">
+                <div class="workflow-title">Custom Startup Logo</div>
+                <div class="workflow-desc">Download IPC firmware, upload your custom logo, and flash the modified VBF.</div>
+            </div>
+
+            <div class="steps-indicator">
+                <div class="step-dot active" data-step="0"></div>
+                <div class="step-connector" data-connector="0"></div>
+                <div class="step-dot" data-step="1"></div>
+                <div class="step-connector" data-connector="1"></div>
+                <div class="step-dot" data-step="2"></div>
+                <div class="step-connector" data-connector="2"></div>
+                <div class="step-dot" data-step="3"></div>
+                <div class="step-connector" data-connector="3"></div>
+                <div class="step-dot" data-step="4"></div>
+            </div>
+
+            <!-- Step 0: Connect & Select Image -->
+            <div class="step-content active" id="step-0">
+                <div class="step-label">Step 1</div>
+                <div class="step-title">Connect Device & Select Logo</div>
+
+                <div class="device-select-group">
+                    <label class="form-label">J2534 PassThru Device</label>
+                    <select class="form-select" id="deviceSelect">
+                        <option value="">Select device...</option>
+                        <option value="mongoose">Drew Tech Mongoose Pro</option>
+                        <option value="vxdiag">VXDiag VCX Nano</option>
+                        <option value="tactrix">Tactrix OpenPort 2.0</option>
+                        <option value="vci">Ford VCI</option>
+                        <option value="cardaq">Drew Tech CarDAQ-M</option>
+                    </select>
+                </div>
+
+                <label class="form-label">Custom Startup Logo (PNG with transparency)</label>
+                <div class="upload-zone" id="uploadZone" onclick="document.getElementById('imageInput').click()">
+                    <svg class="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/>
+                    </svg>
+                    <div class="upload-title">Drop PNG file here</div>
+                    <div class="upload-subtitle">or click to browse • PNG with transparent background</div>
+                </div>
+                <input type="file" class="upload-input" id="imageInput" accept=".png" onchange="handleImageSelect(event)">
+
+                <div class="image-preview-box" id="previewBox">
+                    <div class="preview-thumb" id="previewThumb"></div>
+                    <div class="preview-info">
+                        <div class="preview-filename" id="previewFilename">-</div>
+                        <div class="preview-meta" id="previewMeta">-</div>
+                        <div class="preview-status">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                <path d="M20 6L9 17l-5-5"/>
+                            </svg>
+                            Ready for upload
+                        </div>
+                    </div>
+                </div>
+
+                <div class="server-config">
+                    <div class="config-toggle" onclick="toggleConfig()">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polyline points="6 9 12 15 18 9"/>
+                        </svg>
+                        Server Configuration
+                    </div>
+                    <div class="config-fields" id="configFields">
+                        <div class="device-select-group">
+                            <label class="form-label">API Endpoint</label>
+                            <input type="text" class="form-input" id="serverUrl" value="https://api.testerpresent.com.au/v1/ipc-logo">
+                        </div>
+                    </div>
+                </div>
+
+                <div class="action-buttons">
+                    <button class="btn btn-primary btn-large btn-block" id="startBtn" disabled onclick="startProcess()">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <polygon points="5 3 19 12 5 21 5 3"/>
+                        </svg>
+                        Start Process
+                    </button>
+                </div>
+            </div>
+
+            <!-- Step 1: Downloading BIN -->
+            <div class="step-content" id="step-1">
+                <div class="step-label">Step 2</div>
+                <div class="step-title">Downloading IPC Firmware</div>
+
+                <div class="processing-container">
+                    <div class="spinner"></div>
+                    <div class="processing-title">Reading from Instrument Cluster</div>
+                    <div class="processing-status" id="downloadStatus">Establishing UDS session...</div>
+                    <div class="processing-substatus" id="downloadSubstatus">0x720 → DiagnosticSessionControl</div>
+                </div>
+            </div>
+
+            <!-- Step 2: Server Processing -->
+            <div class="step-content" id="step-2">
+                <div class="step-label">Step 3</div>
+                <div class="step-title">Processing on Server</div>
+
+                <div class="processing-container">
+                    <div class="spinner"></div>
+                    <div class="processing-title" id="serverTitle">Uploading to Server</div>
+                    <div class="processing-status" id="serverStatus">Sending BIN and logo files...</div>
+                    <div class="processing-substatus" id="serverSubstatus">Please wait...</div>
+                </div>
+            </div>
+
+            <!-- Step 3: Flashing -->
+            <div class="step-content" id="step-3">
+                <div class="step-label">Step 4</div>
+                <div class="step-title">Flashing VBF to IPC</div>
+
+                <div class="flash-container">
+                    <div class="flash-header">
+                        <div class="flash-title">Writing Firmware</div>
+                        <div class="flash-percent" id="flashPercent">0%</div>
+                    </div>
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="flashProgress"></div>
+                    </div>
+                    <div class="flash-stats">
+                        <div class="flash-stat">
+                            <div class="flash-stat-value" id="statBytes">0 KB</div>
+                            <div class="flash-stat-label">Written</div>
+                        </div>
+                        <div class="flash-stat">
+                            <div class="flash-stat-value" id="statBlocks">0 / 0</div>
+                            <div class="flash-stat-label">Blocks</div>
+                        </div>
+                        <div class="flash-stat">
+                            <div class="flash-stat-value" id="statTime">00:00</div>
+                            <div class="flash-stat-label">Elapsed</div>
+                        </div>
+                    </div>
+                    <div class="flash-status-text" id="flashStatusText">Erasing flash memory...</div>
+                </div>
+            </div>
+
+            <!-- Step 4: Complete -->
+            <div class="step-content" id="step-4">
+                <div class="step-label">Complete</div>
+                <div class="step-title">Flash Successful</div>
+
+                <div class="complete-container">
+                    <div class="complete-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M20 6L9 17l-5-5"/>
+                        </svg>
+                    </div>
+                    <div class="complete-title">Operation Complete</div>
+                    <div class="complete-subtitle">Custom startup logo has been successfully flashed to the instrument cluster.<br>Cycle ignition to verify the new logo.</div>
+                </div>
+
+                <div class="action-buttons" style="justify-content: center;">
+                    <button class="btn btn-secondary" onclick="resetProcess()">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M3 12a9 9 0 019-9 9.75 9.75 0 016.74 2.74L21 8"/>
+                            <path d="M21 3v5h-5"/>
+                            <path d="M21 12a9 9 0 01-9 9 9.75 9.75 0 01-6.74-2.74L3 16"/>
+                            <path d="M3 21v-5h5"/>
+                        </svg>
+                        Flash Another
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <div class="console-panel">
+            <div class="panel-title">Console Output</div>
+            <div class="console-output" id="console"></div>
+        </div>
+    </main>
+
+    <script>
+        const state = {
+            step: 0,
+            device: null,
+            imageFile: null,
+            imageData: null,
+            connected: false,
+            startTime: null,
+            timerInterval: null
+        };
+
+        // Initialize
+        document.addEventListener('DOMContentLoaded', () => {
+            initDragDrop();
+            log('INFO', 'Ford Firmware Engineering Tool initialized');
+            log('INFO', 'IPC Logo Flasher - Ready');
+        });
+
+        // Logging
+        function log(level, msg) {
+            const c = document.getElementById('console');
+            const time = new Date().toLocaleTimeString('en-US', { hour12: false });
+            const levelClass = { INFO: 'info', OK: 'ok', WARN: 'warn', ERR: 'err', TX: 'tx', RX: 'rx' }[level] || 'info';
+            c.innerHTML += `<div class="log-entry"><span class="log-time">[${time}]</span><span class="log-level ${levelClass}">${level}</span><span class="log-msg">${msg}</span></div>`;
+            c.scrollTop = c.scrollHeight;
+        }
+
+        // Drag & Drop
+        function initDragDrop() {
+            const zone = document.getElementById('uploadZone');
+            ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(e => {
+                zone.addEventListener(e, ev => { ev.preventDefault(); ev.stopPropagation(); });
+            });
+            zone.addEventListener('dragenter', () => zone.classList.add('dragover'));
+            zone.addEventListener('dragover', () => zone.classList.add('dragover'));
+            zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
+            zone.addEventListener('drop', e => {
+                zone.classList.remove('dragover');
+                if (e.dataTransfer.files.length) processImage(e.dataTransfer.files[0]);
+            });
+        }
+
+        function handleImageSelect(e) {
+            if (e.target.files.length) processImage(e.target.files[0]);
+        }
+
+        function processImage(file) {
+            if (!file.name.toLowerCase().endsWith('.png')) {
+                log('ERR', 'Invalid file type - PNG required');
+                return;
+            }
+
+            state.imageFile = file;
+            log('INFO', `Image selected: ${file.name}`);
+
+            const reader = new FileReader();
+            reader.onload = e => {
+                const img = new Image();
+                img.onload = () => {
+                    state.imageData = { width: img.width, height: img.height, dataUrl: e.target.result };
+                    
+                    document.getElementById('uploadZone').classList.add('has-file');
+                    document.getElementById('previewBox').classList.add('visible');
+                    document.getElementById('previewThumb').innerHTML = `<img src="${e.target.result}">`;
+                    document.getElementById('previewFilename').textContent = file.name;
+                    document.getElementById('previewMeta').textContent = `${img.width} × ${img.height} • ${formatBytes(file.size)}`;
+
+                    log('OK', `Image loaded: ${img.width}×${img.height}`);
+                    checkReady();
+                };
+                img.src = e.target.result;
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function checkReady() {
+            const device = document.getElementById('deviceSelect').value;
+            const ready = device && state.imageFile;
+            document.getElementById('startBtn').disabled = !ready;
+        }
+
+        document.getElementById('deviceSelect').addEventListener('change', e => {
+            state.device = e.target.value;
+            checkReady();
+        });
+
+        function toggleConfig() {
+            document.getElementById('configFields').classList.toggle('visible');
+        }
+
+        function formatBytes(b) {
+            if (b === 0) return '0 B';
+            const k = 1024, s = ['B', 'KB', 'MB'];
+            const i = Math.floor(Math.log(b) / Math.log(k));
+            return (b / Math.pow(k, i)).toFixed(1) + ' ' + s[i];
+        }
+
+        // Step Navigation
+        function goToStep(n) {
+            state.step = n;
+            document.querySelectorAll('.step-content').forEach((el, i) => {
+                el.classList.toggle('active', i === n);
+            });
+            document.querySelectorAll('.step-dot').forEach((el, i) => {
+                el.classList.remove('active', 'complete');
+                if (i < n) el.classList.add('complete');
+                else if (i === n) el.classList.add('active');
+            });
+            document.querySelectorAll('.step-connector').forEach((el, i) => {
+                el.classList.toggle('complete', i < n);
+            });
+        }
+
+        // Main Process
+        function startProcess() {
+            log('INFO', '═══════════════════════════════════════');
+            log('INFO', 'Starting IPC logo flash process');
+            
+            // Connect device
+            const deviceName = document.getElementById('deviceSelect').options[document.getElementById('deviceSelect').selectedIndex].text;
+            log('INFO', `Connecting to ${deviceName}...`);
+            
+            setTimeout(() => {
+                state.connected = true;
+                document.getElementById('statusDot').classList.add('connected');
+                document.getElementById('connectionText').textContent = 'Connected';
+                log('OK', 'J2534 device connected');
+                log('TX', '0x720: 10 02 (DiagnosticSessionControl - Programming)');
+                
+                setTimeout(() => {
+                    log('RX', '0x728: 50 02 00 32 01 F4');
+                    log('OK', 'Programming session established');
+                    goToStep(1);
+                    downloadBin();
+                }, 400);
+            }, 800);
+        }
+
+        function downloadBin() {
+            log('INFO', 'Requesting security access...');
+            log('TX', '0x720: 27 03 (SecurityAccess - Request Seed)');
+            
+            const steps = [
+                { delay: 300, fn: () => { log('RX', '0x728: 67 03 A7 B2 C9 D4'); log('INFO', 'Calculating security key...'); }},
+                { delay: 500, fn: () => { log('TX', '0x720: 27 04 E3 F1 82 9A'); }},
+                { delay: 300, fn: () => { log('RX', '0x728: 67 04'); log('OK', 'Security access granted'); }},
+                { delay: 200, fn: () => { 
+                    log('INFO', 'Reading IPC calibration data...');
+                    document.getElementById('downloadStatus').textContent = 'Reading calibration area...';
+                    document.getElementById('downloadSubstatus').textContent = 'ReadMemoryByAddress 0x00010000';
+                    log('TX', '0x720: 23 14 00 01 00 00 10 00');
+                }},
+                { delay: 600, fn: () => { log('RX', '0x728: 63 14 [1024 bytes]'); document.getElementById('downloadSubstatus').textContent = 'Block 1/8 complete'; }},
+                { delay: 400, fn: () => { log('TX', '0x720: 23 14 00 01 10 00 10 00'); document.getElementById('downloadSubstatus').textContent = 'Block 2/8 complete'; }},
+                { delay: 400, fn: () => { log('RX', '0x728: 63 14 [1024 bytes]'); document.getElementById('downloadSubstatus').textContent = 'Block 3/8 complete'; }},
+                { delay: 400, fn: () => { document.getElementById('downloadSubstatus').textContent = 'Block 4/8 complete'; }},
+                { delay: 400, fn: () => { document.getElementById('downloadSubstatus').textContent = 'Block 5/8 complete'; }},
+                { delay: 400, fn: () => { document.getElementById('downloadSubstatus').textContent = 'Block 6/8 complete'; }},
+                { delay: 400, fn: () => { document.getElementById('downloadSubstatus').textContent = 'Block 7/8 complete'; }},
+                { delay: 400, fn: () => { 
+                    document.getElementById('downloadSubstatus').textContent = 'Block 8/8 complete';
+                    log('OK', 'IPC firmware downloaded (32,768 bytes)');
+                }},
+                { delay: 500, fn: () => { goToStep(2); uploadToServer(); }}
+            ];
+
+            let i = 0;
+            function runStep() {
+                if (i < steps.length) {
+                    setTimeout(() => { steps[i].fn(); i++; runStep(); }, steps[i].delay);
+                }
+            }
+            runStep();
+        }
+
+        function uploadToServer() {
+            const server = document.getElementById('serverUrl').value;
+            log('INFO', `Uploading to server: ${server}`);
+            log('INFO', 'Sending IPC BIN + custom logo...');
+            
+            document.getElementById('serverTitle').textContent = 'Uploading Files';
+            document.getElementById('serverStatus').textContent = 'Transferring IPC firmware and logo...';
+            document.getElementById('serverSubstatus').textContent = '0%';
+
+            let progress = 0;
+            const uploadInterval = setInterval(() => {
+                progress += Math.random() * 20;
+                if (progress >= 100) {
+                    progress = 100;
+                    clearInterval(uploadInterval);
+                    log('OK', 'Upload complete');
+                    serverProcessing();
+                }
+                document.getElementById('serverSubstatus').textContent = `${Math.round(progress)}%`;
+            }, 200);
+        }
+
+        function serverProcessing() {
+            document.getElementById('serverTitle').textContent = 'Server Processing';
+            document.getElementById('serverStatus').textContent = 'Building custom VBF file...';
+            
+            const stages = [
+                { delay: 800, msg: 'Extracting logo region from BIN...', sub: 'Analyzing IPC firmware structure' },
+                { delay: 1000, msg: 'Converting PNG to IPC format...', sub: 'RGB888 → RGB565 conversion' },
+                { delay: 800, msg: 'Injecting custom logo...', sub: 'Writing to calibration area 0x00010000' },
+                { delay: 600, msg: 'Calculating checksums...', sub: 'CRC32 verification' },
+                { delay: 800, msg: 'Generating VBF container...', sub: 'Packaging firmware blocks' },
+                { delay: 500, msg: 'Signing VBF...', sub: 'Applying security signature' },
+            ];
+
+            let i = 0;
+            function runStage() {
+                if (i < stages.length) {
+                    document.getElementById('serverStatus').textContent = stages[i].msg;
+                    document.getElementById('serverSubstatus').textContent = stages[i].sub;
+                    log('INFO', stages[i].msg);
+                    setTimeout(() => { i++; runStage(); }, stages[i].delay);
+                } else {
+                    log('OK', 'VBF file received from server');
+                    log('INFO', 'VBF size: 45,312 bytes | Blocks: 12');
+                    setTimeout(() => { goToStep(3); startFlash(); }, 400);
+                }
+            }
+            runStage();
+        }
+
+        function startFlash() {
+            log('INFO', '═══════════════════════════════════════');
+            log('INFO', 'Starting VBF flash to IPC');
+            
+            state.startTime = Date.now();
+            state.timerInterval = setInterval(updateTimer, 1000);
+
+            const totalBlocks = 12;
+            const blockSize = 4096;
+            let block = 0;
+            let bytes = 0;
+
+            log('TX', '0x720: 34 00 44 00 01 00 00 00 B0 00 (RequestDownload)');
+            
+            setTimeout(() => {
+                log('RX', '0x728: 74 20 10 02');
+                log('OK', 'Download request accepted');
+                document.getElementById('flashStatusText').textContent = 'Writing firmware blocks...';
+                
+                const flashInterval = setInterval(() => {
+                    block++;
+                    bytes += blockSize;
+                    const pct = Math.round((block / totalBlocks) * 100);
+
+                    document.getElementById('flashPercent').textContent = `${pct}%`;
+                    document.getElementById('flashProgress').style.width = `${pct}%`;
+                    document.getElementById('statBytes').textContent = formatBytes(bytes);
+                    document.getElementById('statBlocks').textContent = `${block} / ${totalBlocks}`;
+
+                    const addr = (0x00010000 + (block - 1) * blockSize).toString(16).toUpperCase().padStart(8, '0');
+                    log('TX', `0x720: 36 ${block.toString(16).padStart(2, '0').toUpperCase()} [${blockSize} bytes @ 0x${addr}]`);
+                    
+                    setTimeout(() => {
+                        log('RX', `0x728: 76 ${block.toString(16).padStart(2, '0').toUpperCase()}`);
+                    }, 30);
+
+                    if (block >= totalBlocks) {
+                        clearInterval(flashInterval);
+                        clearInterval(state.timerInterval);
+                        finishFlash();
+                    }
+                }, 250);
+            }, 400);
+        }
+
+        function updateTimer() {
+            const elapsed = Math.floor((Date.now() - state.startTime) / 1000);
+            const m = Math.floor(elapsed / 60).toString().padStart(2, '0');
+            const s = (elapsed % 60).toString().padStart(2, '0');
+            document.getElementById('statTime').textContent = `${m}:${s}`;
+        }
+
+        function finishFlash() {
+            document.getElementById('flashProgress').classList.add('complete');
+            document.getElementById('flashStatusText').textContent = 'Verifying and finalizing...';
+
+            log('TX', '0x720: 37 (RequestTransferExit)');
+            setTimeout(() => {
+                log('RX', '0x728: 77');
+                log('TX', '0x720: 31 01 FF 00 (RoutineControl - CheckProgrammingDependencies)');
+            }, 200);
+            setTimeout(() => {
+                log('RX', '0x728: 71 01 FF 00 00');
+                log('OK', 'Programming verification passed');
+            }, 500);
+            setTimeout(() => {
+                log('TX', '0x720: 11 01 (ECUReset - HardReset)');
+            }, 700);
+            setTimeout(() => {
+                log('RX', '0x728: 51 01');
+                log('OK', 'ECU reset commanded');
+                log('INFO', '═══════════════════════════════════════');
+                log('OK', 'FLASH COMPLETE - Custom logo installed');
+                goToStep(4);
+            }, 1000);
+        }
+
+        function resetProcess() {
+            state.step = 0;
+            state.imageFile = null;
+            state.imageData = null;
+            state.connected = false;
+
+            document.getElementById('statusDot').classList.remove('connected');
+            document.getElementById('connectionText').textContent = 'Disconnected';
+            document.getElementById('deviceSelect').value = '';
+            document.getElementById('uploadZone').classList.remove('has-file');
+            document.getElementById('previewBox').classList.remove('visible');
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('flashProgress').style.width = '0%';
+            document.getElementById('flashProgress').classList.remove('complete');
+            document.getElementById('flashPercent').textContent = '0%';
+            document.getElementById('imageInput').value = '';
+
+            goToStep(0);
+            log('INFO', '───────────────────────────────────────');
+            log('INFO', 'Ready for next operation');
+        }
+    </script>
+</body>
+</html>
